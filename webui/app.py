@@ -1,12 +1,13 @@
 """
-Flask web UI for the ESP32-C6 CAN sniffer.
+Flask web UI for the ESP32-C6 CAN sniffer — a small admin-style console.
 
-Serves a live car-style OBD2 dashboard and controls for connecting to the bus and
-recording raw + OBD2 logs (webCAN CSV) that the reverse-engineering skill decodes.
+Pages:  /            Dashboard  (connect, record raw+OBD2, key live values)
+        /diagnostics OBD2 diagnostics (addressing, standard, supported PIDs)
+        /frames      Live raw CAN monitor (filter, plot, import a .dbc to decode)
 
-Run:
-    .venv/bin/python -m webui.app            # http://127.0.0.1:5000
-    PORT=5001 HOST=0.0.0.0 .venv/bin/python -m webui.app
+Run (default localhost:80 needs root on macOS/Linux):
+    sudo .venv/bin/python -m webui.app
+    PORT=8080 .venv/bin/python -m webui.app        # unprivileged
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
-from . import obd2
+from . import obd2  # noqa: F401
 from .session import CanSession, autodetect_port
 
 app = Flask(__name__)
@@ -33,25 +34,21 @@ def _err(exc, code=400):
 
 # ---- pages ----
 @app.get("/")
-def home():
-    return render_template("home.html")
+def dashboard():
+    return render_template("dashboard.html")
 
 
-@app.get("/cluster")
-def cluster():
-    return render_template("cluster.html")
+@app.get("/diagnostics")
+def diagnostics():
+    return render_template("diagnostics.html")
 
 
-@app.get("/hardware")
-def hardware():
-    return render_template("hardware.html")
+@app.get("/frames")
+def frames():
+    return render_template("frames.html")
 
 
-@app.get("/obd2")
-def obd2_page():
-    return render_template("obd2.html")
-
-
+# ---- status / live ----
 @app.get("/api/status")
 def api_status():
     st = session.status()
@@ -66,36 +63,40 @@ def api_live():
     return jsonify(session.live())
 
 
-@app.get("/api/bus")
-def api_bus():
-    return jsonify(session.bus_stats())
-
-
 @app.get("/api/obd2")
 def api_obd2():
-    live = session.live()
-    st = session.status()
-    code = live["values"].get("obd_std", {}).get("value")
-    return jsonify({
-        "connected": live["connected"],
-        "mode": live["mode"],
-        "scheme": live["scheme"],
-        "supported": st["supported"],
-        "supported_names": live["supported_names"],
-        "supported_count": len(st["supported"]),
-        "obd_standard": obd2.obd_standard_name(code) if code is not None else None,
-        "values": live["values"],
-    })
+    return jsonify(session.obd2_scan())
 
 
+@app.get("/api/frames")
+def api_frames():
+    return jsonify(session.frames())
+
+
+@app.get("/api/history")
+def api_history():
+    try:
+        aid = int(request.args["id"], 0)
+    except (KeyError, ValueError):
+        return _err("bad or missing id")
+    byte = request.args.get("byte")
+    signal = request.args.get("signal") or None
+    return jsonify(session.history_series(
+        aid,
+        byte=int(byte) if byte is not None and byte != "" else None,
+        width=int(request.args.get("width", 1)),
+        signal=signal,
+    ))
+
+
+# ---- connection / recording ----
 @app.post("/api/connect")
 def api_connect():
-    body = request.get_json(silent=True) or {}
-    mode = body.get("mode", "normal")
-    bitrate = int(body.get("bitrate", 500000))
-    port = body.get("port") or None
+    b = request.get_json(silent=True) or {}
     try:
-        return _ok(**session.connect(mode=mode, bitrate=bitrate, port=port))
+        return _ok(**session.connect(mode=b.get("mode", "normal"),
+                                     bitrate=int(b.get("bitrate", 500000)),
+                                     port=b.get("port") or None))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -110,10 +111,9 @@ def api_disconnect():
 
 @app.post("/api/record/start")
 def api_record_start():
-    body = request.get_json(silent=True) or {}
+    b = request.get_json(silent=True) or {}
     try:
-        path = session.start_recording(body.get("label", "capture"))
-        return _ok(recording=path)
+        return _ok(recording=session.start_recording(b.get("label", "capture")))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -133,20 +133,49 @@ def api_logs():
         path = Path(p)
         try:
             with open(p, "rb") as f:
-                frames = max(0, sum(1 for _ in f) - 1)  # minus header
+                frames_n = max(0, sum(1 for _ in f) - 1)
         except OSError:
-            frames = None
-        out.append({"name": path.name, "path": p,
-                    "size": path.stat().st_size, "frames": frames})
+            frames_n = None
+        out.append({"name": path.name, "size": path.stat().st_size, "frames": frames_n})
     return jsonify({"ok": True, "logs": out})
 
 
+# ---- DBC import ----
+@app.get("/api/dbc")
+def api_dbc_get():
+    return jsonify(session.dbc_info())
+
+
+@app.post("/api/dbc")
+def api_dbc_load():
+    f = request.files.get("dbc")
+    if f is None:
+        return _err("no file uploaded (field 'dbc')")
+    try:
+        text = f.read().decode("utf-8", errors="replace")
+        return _ok(**session.load_dbc(text, f.filename or "imported.dbc"))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@app.post("/api/dbc/clear")
+def api_dbc_clear():
+    session.clear_dbc()
+    return _ok()
+
+
 def main():
-    host = os.environ.get("HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT", "5000"))
+    host = os.environ.get("HOST", "localhost")
+    port = int(os.environ.get("PORT", "80"))
     print(f"CAN web UI on http://{host}:{port}  (device: {autodetect_port() or 'none detected'})")
-    # threaded=True so the live poll + control requests don't block each other
-    app.run(host=host, port=port, threaded=True, debug=False)
+    try:
+        app.run(host=host, port=port, threaded=True, debug=False)
+    except PermissionError:
+        print(f"\nPermission denied binding port {port}. Ports < 1024 need root:\n"
+              f"  sudo .venv/bin/python -m webui.app\n"
+              f"or run unprivileged on another port:\n"
+              f"  PORT=8080 .venv/bin/python -m webui.app")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

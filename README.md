@@ -31,10 +31,10 @@ tools/
   record.py          capture bus -> temp-output/trace_<label>.csv (webCAN CSV)
   check_device.py    quick "is it wired right / are frames flowing?" check
   obd2_test.py       probe OBD2 support (11-bit + 29-bit) and decode PIDs
-webui/               Flask web UI — a menu of tools
+webui/               Flask web UI — admin console
   app.py session.py obd2.py
-  templates/         home, cluster, hardware, obd2 (base layout)
-  static/            style.css, app.js, cluster-demo.html (offline demo)
+  templates/         base + dashboard, diagnostics, frames
+  static/            style.css, app.js
 docs/hardware.md     wiring, OBD2 pinout, termination & safety notes
 requirements.txt     host Python deps (venv at repo root)
 .claude/skills/      cansub-reverse-engineering, combine-dbc, cansub-knowledge
@@ -90,29 +90,32 @@ reverse-engineering skill reads.
 
 ## Web dashboard (live gauges + recording)
 
-A browser UI with a **menu of tools** and a global connection bar (the serial port
-is exclusive — one tool uses the bus at a time):
+A small admin console with a sidebar menu and a global connection bar (the serial
+port is exclusive — one page uses the bus at a time). Three tools:
 
-- **Home** (`/`) — menu + list of recorded logs.
-- **Cluster** (`/cluster`) — car-style instrument dashboard from live OBD2 data.
-- **Hardware test** (`/hardware`) — frame rate + busiest CAN IDs (confirm wiring).
-- **OBD2 scan** (`/obd2`) — detected addressing (11/29-bit), OBD standard, supported PIDs.
-- **Offline demo** (`/static/cluster-demo.html`) — the cluster with simulated data, no hardware.
+- **Dashboard** (`/`) — connect, **Record** raw+OBD2, frame rate, and key live OBD2
+  values (RPM, speed, coolant, fuel, throttle, load, module voltage) as stat tiles.
+- **Diagnostics** (`/diagnostics`) — what OBD2 exposes by default: addressing
+  (11/29-bit), OBD standard, supported-PID list, and all live decoded values.
+- **Live frames** (`/frames`) — raw CAN monitor: per-ID table (count, cycle, data)
+  with a filter, a **.dbc import** to decode identified frames, and a **plot** of any
+  byte or decoded signal over time.
 
 ```bash
-.venv/bin/python -m webui.app        # -> http://127.0.0.1:5000
+sudo .venv/bin/python -m webui.app          # default localhost:80 (root for port 80)
+PORT=8080 .venv/bin/python -m webui.app     # or unprivileged on another port
 ```
 
-Pick **Normal** mode → **Connect** (top-right) → the gauges fill in (RPM, speed,
-coolant, fuel, throttle, load, intake, MAF, module voltage), and **Record** writes
-the raw proprietary bus **plus** the OBD2 responses to
-`temp-output/trace_<label>.csv` — the exact log the reverse-engineering skill decodes.
+Pick **Normal** mode → **Connect** (top-right); **Record** writes the raw proprietary
+bus **plus** the OBD2 responses to `temp-output/trace_<label>.csv` — the exact log the
+reverse-engineering skill decodes.
 
-- One process owns the serial port: the app runs a background thread that decodes
-  OBD2 responses into a live snapshot the browser polls (`/api/live`), while a
-  poller thread does self-healing PID discovery (tries 11-bit and 29-bit, so it
-  auto-detects the Fiat's 29-bit OBD2 and recovers when the bus wakes).
-- **Listen-only** mode records passively (no dashboard data — OBD2 needs requests).
+- One process owns the serial port: a background thread decodes OBD2 responses into a
+  snapshot the pages poll (`/api/live`, `/api/frames`), tees all frames to a
+  `can.Logger` when recording, and a poller does self-healing PID discovery (tries
+  11-bit and 29-bit, so it auto-detects the Fiat's 29-bit OBD2 and recovers when the
+  bus wakes).
+- **Listen-only** mode records passively (no OBD2 values — OBD2 needs requests).
 
 ### Getting a decodable reference (recommended)
 

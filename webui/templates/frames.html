@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block page %}Live frames{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="row">
+    <label class="fld">Filter by ID<input id="f-filter" placeholder="e.g. 618 or A18A001" size="16"></label>
+    <label class="fld">&nbsp;<span><input type="checkbox" id="f-pause"> pause</span></label>
+    <span class="spacer"></span>
+    <label class="fld">Import DBC<input type="file" id="f-dbc" accept=".dbc"></label>
+    <label class="fld">&nbsp;<button class="btn" id="f-dbc-load">Load</button></label>
+    <label class="fld">&nbsp;<span class="pill" id="f-dbc-name">no DBC</span></label>
+    <label class="fld">&nbsp;<button class="btn" id="f-dbc-clear">Clear</button></label>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Frames <span class="muted" id="f-count" style="text-transform:none;letter-spacing:0"></span></h2>
+  <div class="tablewrap">
+    <table class="data"><thead><tr>
+      <th>ID</th><th>Fmt</th><th class="num">Count</th><th class="num">Cycle ms</th>
+      <th class="num">DLC</th><th>Data</th><th>Decoded (DBC)</th>
+    </tr></thead><tbody id="f-rows"><tr><td colspan="7" class="muted">connect to see frames…</td></tr></tbody></table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Plot</h2>
+  <div class="row" style="margin-bottom:12px">
+    <label class="fld">ID<select id="p-id"><option value="">—</option></select></label>
+    <label class="fld">Field<select id="p-field"><option value="">—</option></select></label>
+    <label class="fld">&nbsp;<button class="btn" id="p-go">Plot</button></label>
+    <span class="muted" id="p-info"></span>
+  </div>
+  <canvas class="chart" id="p-canvas"></canvas>
+</div>
+{% endblock %}
+{% block script %}<script>
+(function(){
+  const $=s=>document.querySelector(s);
+  let latest={rows:[]}, dbcName=null;
+
+  // ---- frames table ----
+  async function tick(){
+    if($("#f-pause").checked) return;
+    let j;try{ j=await api("/api/frames"); }catch(e){ return; }
+    latest=j; dbcName=j.dbc;
+    $("#f-dbc-name").textContent=j.dbc?("DBC: "+j.dbc):"no DBC";
+    $("#f-dbc-name").classList.toggle("ok",!!j.dbc);
+    render();
+    syncIdSelect();
+  }
+  function render(){
+    const q=$("#f-filter").value.trim().toLowerCase();
+    const rows=latest.rows.filter(r=>!q || r.id.toLowerCase().includes(q));
+    $("#f-count").textContent=`(${rows.length}/${latest.rows.length} IDs${latest.connected?"":" · disconnected"})`;
+    const tb=$("#f-rows");
+    if(!rows.length){tb.innerHTML='<tr><td colspan="7" class="muted">'+(latest.connected?"no matching IDs":"connect to see frames…")+'</td></tr>';return;}
+    tb.innerHTML=rows.map(r=>{
+      const sig=Object.keys(r.signals||{}).map(k=>`${k}=${r.signals[k]}`).join("  ");
+      return `<tr><td class="mono">${r.id}</td><td class="muted">${r.ext?"ext":"std"}</td>`+
+        `<td class="num">${r.count.toLocaleString()}</td><td class="num">${r.cycle_ms||"–"}</td>`+
+        `<td class="num">${r.dlc}</td><td class="mono">${r.data.replace(/(..)/g,"$1 ").trim()}</td>`+
+        `<td class="sig">${sig}</td></tr>`;
+    }).join("");
+  }
+  $("#f-filter").addEventListener("input",render);
+
+  // ---- DBC import ----
+  $("#f-dbc-load").addEventListener("click",async()=>{
+    const f=$("#f-dbc").files[0];
+    if(!f){alert("pick a .dbc file");return;}
+    const fd=new FormData();fd.append("dbc",f);
+    const r=await fetch("/api/dbc",{method:"POST",body:fd}).then(r=>r.json());
+    if(!r.ok){alert("DBC load failed: "+r.error);return;}
+    tick();
+  });
+  $("#f-dbc-clear").addEventListener("click",async()=>{await api("/api/dbc/clear",{});tick();});
+
+  // ---- plot ----
+  function syncIdSelect(){
+    const sel=$("#p-id"), cur=sel.value;
+    const ids=latest.rows.map(r=>r.id);
+    const want='<option value="">—</option>'+ids.map(i=>`<option>${i}</option>`).join("");
+    if(sel.dataset.sig!==want){sel.innerHTML=want;sel.dataset.sig=want;if(ids.includes(cur))sel.value=cur;}
+  }
+  function fieldsFor(idHex){
+    const row=latest.rows.find(r=>r.id===idHex);
+    const opts=[];
+    const dlc=row?row.dlc:8;
+    for(let b=0;b<dlc;b++)opts.push(["byte:"+b,"byte "+b]);
+    if(dlc>=2)for(let b=0;b<dlc-1;b++)opts.push(["byte2:"+b,"bytes "+b+"-"+(b+1)+" (16b BE)"]);
+    Object.keys((row&&row.signals)||{}).forEach(s=>opts.push(["sig:"+s,"⟑ "+s]));
+    return opts;
+  }
+  $("#p-id").addEventListener("change",()=>{
+    const opts=fieldsFor($("#p-id").value);
+    $("#p-field").innerHTML='<option value="">—</option>'+opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join("");
+  });
+  let plotKey=null;
+  async function plot(){
+    const id=$("#p-id").value, field=$("#p-field").value;
+    if(!id||!field){return;}
+    let q="/api/history?id="+encodeURIComponent(id);
+    if(field.startsWith("sig:")) q+="&signal="+encodeURIComponent(field.slice(4));
+    else if(field.startsWith("byte2:")) q+="&byte="+field.slice(6)+"&width=2";
+    else q+="&byte="+field.slice(5);
+    let j;try{ j=await (await fetch(q)).json(); }catch(e){ return; }
+    $("#p-info").textContent=`${j.field} · ${j.n} pts`;
+    draw($("#p-canvas"), j.points);
+    plotKey=id+"|"+field;
+  }
+  $("#p-go").addEventListener("click",plot);
+  setInterval(()=>{ if(plotKey && $("#p-id").value+"|"+$("#p-field").value===plotKey) plot(); },1200);
+
+  function draw(cv, pts){
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    const W=cv.clientWidth, H=cv.clientHeight;
+    cv.width=W*dpr; cv.height=H*dpr;
+    const c=cv.getContext("2d"); c.setTransform(dpr,0,0,dpr,0,0); c.clearRect(0,0,W,H);
+    const pad={l:52,r:12,t:12,b:24};
+    c.strokeStyle="#e5e7eb"; c.strokeRect(pad.l,pad.t,W-pad.l-pad.r,H-pad.t-pad.b);
+    if(!pts||pts.length<2){c.fillStyle="#9ca3af";c.font="13px system-ui";c.fillText("no data (need ≥2 samples)",pad.l+10,H/2);return;}
+    const ts=pts.map(p=>p[0]),vs=pts.map(p=>p[1]);
+    const t0=ts[0],t1=ts[ts.length-1];let vmin=Math.min(...vs),vmax=Math.max(...vs);
+    if(vmin===vmax){vmin-=1;vmax+=1;}
+    const x=t=>pad.l+(t1===t0?0:(t-t0)/(t1-t0))*(W-pad.l-pad.r);
+    const y=v=>H-pad.b-((v-vmin)/(vmax-vmin))*(H-pad.t-pad.b);
+    c.fillStyle="#6b7280";c.font="11px "+"ui-monospace,monospace";c.textAlign="right";
+    c.fillText(vmax.toFixed(1),pad.l-6,pad.t+10);c.fillText(vmin.toFixed(1),pad.l-6,H-pad.b);
+    c.textAlign="left";c.fillText("0s",pad.l,H-pad.b+16);c.textAlign="right";c.fillText((t1-t0).toFixed(1)+"s",W-pad.r,H-pad.b+16);
+    c.strokeStyle="#2563eb";c.lineWidth=1.5;c.beginPath();
+    pts.forEach((p,i)=>{const px=x(p[0]),py=y(p[1]);i?c.lineTo(px,py):c.moveTo(px,py);});c.stroke();
+  }
+
+  tick();setInterval(tick,700);
+})();
+</script>{% endblock %}

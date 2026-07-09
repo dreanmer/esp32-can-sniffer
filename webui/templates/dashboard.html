@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block page %}Dashboard{% endblock %}
+{% block content %}
+<div id="hint" class="banner" style="display:none"></div>
+
+<div class="tiles" style="margin-bottom:16px">
+  <div class="tile"><div class="lbl">Frame rate</div><div class="val" id="s-rate">–<small>fr/s</small></div></div>
+  <div class="tile"><div class="lbl">Total frames</div><div class="val" id="s-frames">–</div></div>
+  <div class="tile"><div class="lbl">Unique IDs</div><div class="val" id="s-ids">–</div></div>
+  <div class="tile"><div class="lbl">Recording</div><div class="val" id="s-rec" style="font-size:18px;font-family:var(--ui)">–</div></div>
+</div>
+
+<div class="card">
+  <h2>OBD2 live values</h2>
+  <div class="tiles" id="obd-tiles"></div>
+</div>
+
+<div class="card">
+  <h2>Recorded logs (temp-output/)</h2>
+  <table class="data"><thead><tr><th>File</th><th class="num">Frames</th><th class="num">Size</th></tr></thead>
+    <tbody id="logs"><tr><td colspan="3" class="muted">loading…</td></tr></tbody></table>
+</div>
+{% endblock %}
+{% block script %}<script>
+(function(){
+  const $=s=>document.querySelector(s);
+  const KEYS=[
+    {k:"rpm",lbl:"RPM",u:"",dec:0},
+    {k:"speed",lbl:"Speed",u:"km/h",dec:0},
+    {k:"coolant",lbl:"Coolant",u:"°C",dec:0,warnHigh:110,critHigh:120},
+    {k:"fuel",lbl:"Fuel",u:"%",dec:0,warnLow:15},
+    {k:"throttle",lbl:"Throttle",u:"%",dec:0},
+    {k:"load",lbl:"Load",u:"%",dec:0},
+    {k:"volt",lbl:"Module V",u:"V",dec:1,warnLow:12.2,critLow:11.5},
+  ];
+  const wrap=$("#obd-tiles");
+  KEYS.forEach(c=>{const el=document.createElement("div");el.className="tile stale";el.id="t-"+c.k;
+    el.innerHTML=`<div class="lbl">${c.lbl}</div><div class="val">--<small>${c.u}</small></div>`;wrap.appendChild(el);});
+
+  let lastF=null,lastT=null;
+  async function tick(){
+    let j=null;try{ j=await api("/api/live"); }catch(e){}
+    const hint=$("#hint");
+    if(!j||!j.connected){hint.style.display="block";hint.textContent="Not connected — use Connect (top-right). For OBD2 values pick Normal mode.";}
+    else if(j.mode!=="normal"){hint.style.display="block";hint.textContent="Listen-only mode: raw frames only. Reconnect as Normal for OBD2 values.";}
+    else hint.style.display="none";
+    if(!j)return;
+    const now=performance.now();
+    if(lastF!=null&&now>lastT){$("#s-rate").innerHTML=Math.max(0,Math.round((j.frame_count-lastF)*1000/(now-lastT)))+'<small>fr/s</small>';}
+    lastF=j.frame_count;lastT=now;
+    $("#s-frames").textContent=(j.frame_count||0).toLocaleString();
+    $("#s-ids").textContent=j.unique_ids||0;
+    $("#s-rec").textContent=j.recording?("● "+j.recording.split("/").pop()):"idle";
+    $("#s-rec").style.color=j.recording?"var(--crit)":"var(--muted)";
+    const vals=j.values||{};
+    KEYS.forEach(c=>{const el=$("#t-"+c.k);const v=vals[c.k];const vEl=el.querySelector(".val");
+      el.classList.remove("stale","warn","crit");
+      if(!v||v.age>3){el.classList.add("stale");vEl.innerHTML=`--<small>${c.u}</small>`;return;}
+      const x=v.value;let cls="";
+      if((c.critLow!=null&&x<=c.critLow)||(c.critHigh!=null&&x>=c.critHigh))cls="crit";
+      else if((c.warnLow!=null&&x<=c.warnLow)||(c.warnHigh!=null&&x>=c.warnHigh))cls="warn";
+      if(cls)el.classList.add(cls);
+      vEl.innerHTML=`${x.toFixed(c.dec)}<small>${c.u}</small>`;});
+  }
+  async function logs(){
+    let j;try{ j=await api("/api/logs"); }catch(e){ j={logs:[]}; }
+    const tb=$("#logs");
+    tb.innerHTML=j.logs&&j.logs.length
+      ? j.logs.map(l=>`<tr><td class="mono">${l.name}</td><td class="num">${l.frames==null?"?":l.frames.toLocaleString()}</td><td class="num">${(l.size/1024).toFixed(1)} KB</td></tr>`).join("")
+      : '<tr><td colspan="3" class="muted">no logs yet</td></tr>';
+  }
+  tick();setInterval(tick,1000);
+  logs();setInterval(logs,4000);
+})();
+</script>{% endblock %}

@@ -2,32 +2,43 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<title>{% block title %}CAN Sniffer{% endblock %} · Fiat 500</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block page %}{% endblock %} · CAN Sniffer</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<nav class="nav">
-  <a class="brand" href="/">FIAT 500 · OBD2</a>
-  <a class="link" href="/">Home</a>
-  <a class="link" href="/cluster">Cluster</a>
-  <a class="link" href="/hardware">Hardware</a>
-  <a class="link" href="/obd2">OBD2 scan</a>
-  <span class="spacer"></span>
-  <span class="conn"><span class="dot" id="g-dot"></span> <span id="g-conn">OFFLINE</span></span>
-  <span class="rec" id="g-rec"><span class="led"></span> REC</span>
-  <span class="stat" id="g-frames"></span>
-  <select id="g-mode" title="connection mode">
-    <option value="normal">Normal (OBD2)</option>
-    <option value="listen">Listen-only</option>
-  </select>
-  <button class="btn primary" id="g-connect">Connect</button>
-  <input id="g-label" value="drive" title="recording label">
-  <button class="btn" id="g-record" disabled>● Record</button>
-</nav>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">CAN Sniffer<small>Fiat 500 · ESP32-C6</small></div>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/diagnostics">Diagnostics</a>
+      <a href="/frames">Live frames</a>
+    </nav>
+    <div class="foot">SLCAN · python-can</div>
+  </aside>
 
-{% block content %}{% endblock %}
+  <div class="main">
+    <div class="topbar">
+      <h1>{{ self.page() }}</h1>
+      <span class="spacer"></span>
+      <span class="rec" id="c-rec"><span class="led"></span> REC</span>
+      <span class="conn"><span class="dot" id="c-dot"></span><span id="c-conn">Disconnected</span></span>
+      <span class="conn mono" id="c-frames" style="font-size:12px"></span>
+      <select id="c-mode" title="connection mode">
+        <option value="normal">Normal (OBD2)</option>
+        <option value="listen">Listen-only</option>
+      </select>
+      <button class="btn primary" id="c-connect">Connect</button>
+      <input id="c-label" value="drive" size="8" title="recording label">
+      <button class="btn" id="c-record" disabled>Record</button>
+    </div>
+
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 {% block script %}{% endblock %}
