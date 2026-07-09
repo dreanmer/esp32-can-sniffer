@@ -39,6 +39,11 @@ class _RxListener(can.Listener):
         parsed = obd2.parse_response(msg)
         with s.lock:
             s.frame_count += 1
+            e = s.id_counts.get(msg.arbitration_id)
+            if e is not None:
+                e[0] += 1
+            else:
+                s.id_counts[msg.arbitration_id] = [1, bool(msg.is_extended_id)]
             if parsed is not None:
                 kind = parsed[0]
                 if s.scheme is None:
@@ -110,6 +115,7 @@ class CanSession:
         self.scheme: Optional[str] = None      # '29bit' | '11bit'
         self.supported: list[int] = []
         self.values: dict[str, tuple[float, float]] = {}   # name -> (value, epoch)
+        self.id_counts: dict[int, list] = {}               # arb_id -> [count, ext]
         self.frame_count = 0
         self.port: Optional[str] = None
         self.bitrate = 500000
@@ -134,6 +140,7 @@ class CanSession:
             self.scheme = None
             self.supported = []
             self.values = {}
+            self.id_counts = {}
             self.frame_count = 0
         self.notifier = can.Notifier([bus], [_RxListener(self)])
         if mode == "normal":
@@ -227,6 +234,17 @@ class CanSession:
                 "supported": [f"0x{p:02X}" for p in self.supported],
                 "supported_names": self._supported_names(),
             }
+
+    def bus_stats(self, top: int = 80) -> dict:
+        """Per-ID frame stats for the hardware-test view."""
+        with self.lock:
+            connected = self.bus is not None
+            fc = self.frame_count
+            rows = [{"id": f"0x{i:0{8 if ext else 3}X}", "count": c, "ext": ext}
+                    for i, (c, ext) in self.id_counts.items()]
+        rows.sort(key=lambda r: r["count"], reverse=True)
+        return {"connected": connected, "mode": self.mode, "frame_count": fc,
+                "unique_ids": len(rows), "ids": rows[:top]}
 
     def live(self) -> dict:
         now = time.time()

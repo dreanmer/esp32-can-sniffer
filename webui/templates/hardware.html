@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Hardware test{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>Hardware test</h1>
+  <p class="muted">Confirm the device sees the bus. Connect in <b>any</b> mode (Listen-only is passive and safe).
+     If you get 0 frames on a live bus, the transceiver TX/RX are likely swapped, or the bitrate/pins/ground are wrong.</p>
+  <div id="hint" class="banner" style="display:none"></div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:1em 0">
+    <div class="card"><p>Frame rate</p><div class="big stat"><span id="rate">–</span><span style="font-size:.4em"> fr/s</span></div></div>
+    <div class="card"><p>Total frames</p><div class="big stat" id="frames">–</div></div>
+    <div class="card"><p>Unique IDs</p><div class="big stat" id="uniq">–</div></div>
+  </div>
+
+  <h2>Busiest CAN IDs</h2>
+  <table class="data">
+    <thead><tr><th>CAN ID</th><th>Format</th><th class="num">Count</th><th class="num">Share</th></tr></thead>
+    <tbody id="ids"><tr><td colspan="4" class="muted">connect to see frames…</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block script %}<script>
+(function(){
+  let lastFrames=null,lastT=null;
+  async function tick(){
+    let j=null;try{ j=await api("/api/bus"); }catch(e){}
+    const hint=document.getElementById("hint");
+    if(!j||!j.connected){hint.style.display="block";hint.textContent="Not connected — click Connect (top-right). Listen-only mode is fine.";}
+    else if((j.frame_count||0)===0){hint.style.display="block";hint.textContent="Connected but 0 frames. Live bus? Check TX/RX swap, bitrate, OBD pins 6/14, common ground, ignition on.";}
+    else hint.style.display="none";
+    if(!j){return;}
+    const now=performance.now();
+    if(lastFrames!=null && lastT!=null && now>lastT){
+      const rate=(j.frame_count-lastFrames)*1000/(now-lastT);
+      document.getElementById("rate").textContent=Math.max(0,Math.round(rate));
+    }
+    lastFrames=j.frame_count;lastT=now;
+    document.getElementById("frames").textContent=(j.frame_count||0).toLocaleString();
+    document.getElementById("uniq").textContent=j.unique_ids||0;
+    const tb=document.getElementById("ids");
+    if(!j.ids||!j.ids.length){tb.innerHTML='<tr><td colspan="4" class="muted">no frames yet…</td></tr>';return;}
+    const tot=j.frame_count||1;
+    tb.innerHTML=j.ids.map(r=>`<tr><td>${r.id}</td><td class="muted">${r.ext?"ext 29-bit":"std 11-bit"}</td><td class="num">${r.count.toLocaleString()}</td><td class="num">${(100*r.count/tot).toFixed(1)}%</td></tr>`).join("");
+  }
+  tick();setInterval(tick,500);
+})();
+</script>{% endblock %}

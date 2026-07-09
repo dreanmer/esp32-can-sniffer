@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Cluster{% endblock %}
+{% block content %}
+<div class="page">
+  <div id="hint" class="banner" style="display:none"></div>
+  <div class="shiftlights" id="shift"></div>
+  <div class="hero">
+    <div class="gauge" data-key="rpm"><canvas></canvas>
+      <div class="hub"><div class="hub-val" id="rpm-v">0</div><div class="hub-unit">rpm ×1000</div><div class="hub-cap">ENGINE</div></div>
+    </div>
+    <div class="center-col"><div class="gear-lbl">GEAR</div><div class="gear" id="gear">–</div><div class="trip">TRIP <b id="trip">0.00</b> km</div></div>
+    <div class="gauge" data-key="speed"><canvas></canvas>
+      <div class="hub"><div class="hub-val" id="speed-v">0</div><div class="hub-unit">km/h</div><div class="hub-cap">VEHICLE</div></div>
+    </div>
+  </div>
+  <div class="tiles" id="tiles"></div>
+  <div class="telltales" id="telltales"></div>
+</div>
+{% endblock %}
+{% block script %}<script>
+(function(){
+  "use strict";
+  const $=s=>document.querySelector(s);
+  const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+  const T=()=>performance.now();
+  const RS=getComputedStyle(document.documentElement);
+  const V={};["--ink","--ink-dim","--ink-faint","--edge","--edge-soft","--panel","--panel-2","--cyan","--cold","--ok","--warn","--crit"].forEach(k=>V[k]=RS.getPropertyValue(k).trim());
+  const SEVCOL={ok:V["--cyan"],cold:V["--cold"],warn:V["--warn"],crit:V["--crit"],na:V["--ink-faint"]};
+
+  const CFG={
+    rpm:{unit:"rpm",pid:"01 0C",min:0,max:7000,tau:90,dec:0,div:1000,tickMajor:1000,tickMinor:500,zones:[[6000,6500,"warn"],[6500,7000,"crit"]],warnHigh:6000,critHigh:6500},
+    speed:{unit:"km/h",pid:"01 0D",min:0,max:180,tau:230,dec:0,div:1,tickMajor:40,tickMinor:20},
+    coolant:{label:"COOLANT",unit:"°C",pid:"01 05",min:40,max:120,tau:650,dec:0,coldBelow:70,warnHigh:110,critHigh:120,ticks:[70,110,120]},
+    fuel:{label:"FUEL",unit:"%",pid:"01 2F",min:0,max:100,tau:850,dec:0,warnLow:15,critLow:8,ticks:[8,15]},
+    throttle:{label:"THROTTLE",unit:"%",pid:"01 11",min:0,max:100,tau:180,dec:0},
+    load:{label:"ENGINE LOAD",unit:"%",pid:"01 04",min:0,max:100,tau:230,dec:0,warnHigh:90,ticks:[90]},
+    intake:{label:"INTAKE AIR",unit:"°C",pid:"01 0F",min:-10,max:80,tau:750,dec:0,warnHigh:60,ticks:[60]},
+    maf:{label:"MAF",unit:"g/s",pid:"01 10",min:0,max:100,tau:400,dec:1},
+    volt:{label:"MODULE VOLT",unit:"V",pid:"01 42",min:8,max:16,tau:500,dec:1,critLow:11.5,warnLow:12.2,warnHigh:15.0,ticks:[11.5,12.2,15.0]},
+  };
+  const TILE_KEYS=["coolant","fuel","throttle","load","intake","maf","volt"];
+  const FAST=["rpm","speed","throttle","load"];
+  const S={};Object.keys(CFG).forEach(k=>S[k]={raw:null,disp:CFG[k].min,supported:true,last:0});
+
+  function sev(k,v){if(v==null)return "na";const c=CFG[k];
+    if(c.critLow!=null&&v<=c.critLow)return "crit";if(c.critHigh!=null&&v>=c.critHigh)return "crit";
+    if(c.warnLow!=null&&v<=c.warnLow)return "warn";if(c.warnHigh!=null&&v>=c.warnHigh)return "warn";
+    if(c.coldBelow!=null&&v<c.coldBelow)return "cold";return "ok";}
+  function dispState(k){const st=S[k];if(!st.supported)return "na";
+    const staleMs=FAST.includes(k)?1200:3500;if(T()-st.last>staleMs)return "stale";return "live";}
+
+  let connected=false,scheme=null,gearNow=-1,tripKm=0,lastTrip=T();
+  const GBAND=[0,20,42,68,95];
+  function gearOf(sp){let g=0;for(let i=0;i<GBAND.length;i++)if(sp>=GBAND[i])g=i;return g;}
+  async function poll(){
+    let j=null;try{ j=await api("/api/live"); }catch(e){}
+    if(!j){connected=false;return;}
+    connected=!!j.connected;scheme=j.scheme;
+    const now=T(),sup=j.supported_names||[],vals=j.values||{};
+    Object.keys(CFG).forEach(k=>{
+      if(!connected){S[k].supported=true;return;}
+      const v=vals[k];S[k].supported=sup.includes(k)||v!=null;
+      if(v){S[k].raw=v.value;S[k].last=now-Math.max(0,v.age)*1000;}
+    });
+    const t=T(),dt=(t-lastTrip)/1000;lastTrip=t;
+    if(dispState("speed")==="live")tripKm+=(S.speed.disp/3600)*dt;
+    gearNow=dispState("speed")==="live"?(S.speed.disp<1?0:gearOf(S.speed.disp)+1):-1;
+    const hint=$("#hint");
+    if(!connected){hint.style.display="block";hint.textContent="Not connected — click Connect (Normal mode) in the top-right to see live data.";}
+    else if(j.mode!=="normal"){hint.style.display="block";hint.textContent="Connected in "+j.mode+" mode. OBD2 gauges need Normal mode (reconnect as Normal).";}
+    else hint.style.display="none";
+  }
+
+  const tilesEl=$("#tiles"),tileRef={};
+  TILE_KEYS.forEach(k=>{const c=CFG[k];const el=document.createElement("div");el.className="tile";el.dataset.state="stale";
+    el.innerHTML='<div class="tile-head"><span class="tile-label">'+c.label+'</span><span class="tile-pid">'+c.pid+'</span></div>'+
+      '<div class="tile-val"><span class="v">--</span><span class="u">'+c.unit+'</span><span class="chip" style="margin-left:auto"></span></div>'+
+      '<div class="bar"><div class="bar-fill"></div></div><div class="tile-range"><span>'+c.min+'</span><span>'+c.max+'</span></div>';
+    tilesEl.appendChild(el);const bar=el.querySelector(".bar");
+    (c.ticks||[]).forEach(tv=>{const pct=(tv-c.min)/(c.max-c.min)*100;const t=document.createElement("div");t.className="bar-tick";
+      if((c.critLow!=null&&tv===c.critLow)||(c.critHigh!=null&&tv===c.critHigh))t.className+=" crit";
+      else if((c.warnLow!=null&&tv===c.warnLow)||(c.warnHigh!=null&&tv===c.warnHigh))t.className+=" warn";
+      t.style.left="calc("+pct+"% - 1px)";bar.appendChild(t);});
+    tileRef[k]={root:el,v:el.querySelector(".v"),fill:el.querySelector(".bar-fill"),chip:el.querySelector(".chip")};});
+
+  const shiftEl=$("#shift"),SL=[];for(let i=0;i<12;i++){const d=document.createElement("div");d.className="sl";shiftEl.appendChild(d);SL.push(d);}
+  function updateShift(){const live=dispState("rpm")==="live";const rpm=live?S.rpm.disp:0;const start=3800,span=6500-start;
+    const lit=live?Math.round(clamp((rpm-start)/span,0,1)*12):0;shiftEl.classList.toggle("redline",rpm>=6500);
+    for(let i=0;i<12;i++){if(i<lit)SL[i].dataset.on=i<6?"g":(i<10?"a":"r");else SL[i].removeAttribute("data-on");}}
+
+  const gauges={};
+  function initGauge(key){const wrap=document.querySelector('.gauge[data-key="'+key+'"]');const canvas=wrap.querySelector("canvas");
+    const g={key,cfg:CFG[key],canvas,ctx:canvas.getContext("2d"),w:0,h:0};
+    function size(){const dpr=Math.min(window.devicePixelRatio||1,2);const r=wrap.getBoundingClientRect();g.w=r.width;g.h=r.height;
+      canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);g.ctx.setTransform(dpr,0,0,dpr,0,0);}
+    size();new ResizeObserver(size).observe(wrap);gauges[key]=g;}
+  const START=135*Math.PI/180,SWEEP=270*Math.PI/180;
+  function drawGauge(g){const c=g.ctx,cfg=g.cfg,st=S[g.key];const w=g.w,h=g.h,cx=w/2,cy=h*0.54,r=Math.min(w,h)*0.42,lw=r*0.12;
+    const ang=v=>START+(clamp(v,cfg.min,cfg.max)-cfg.min)/(cfg.max-cfg.min)*SWEEP;c.clearRect(0,0,w,h);
+    c.lineCap="round";c.lineWidth=lw;c.strokeStyle=V["--edge-soft"];c.beginPath();c.arc(cx,cy,r,START,START+SWEEP);c.stroke();
+    if(cfg.zones){c.lineCap="butt";cfg.zones.forEach(z=>{c.globalAlpha=.4;c.strokeStyle=z[2]==="warn"?V["--warn"]:V["--crit"];c.beginPath();c.arc(cx,cy,r,ang(z[0]),ang(z[1]));c.stroke();c.globalAlpha=1;});}
+    const ds=dispState(g.key);const col=ds==="live"?SEVCOL[sev(g.key,st.raw)]:(ds==="stale"?V["--ink-dim"]:V["--ink-faint"]);
+    c.lineCap="round";c.lineWidth=lw;c.strokeStyle=col;c.shadowBlur=18;c.shadowColor=col;c.beginPath();c.arc(cx,cy,r,START,ang(st.disp));c.stroke();c.shadowBlur=0;
+    c.strokeStyle=V["--ink-dim"];c.fillStyle=V["--ink-dim"];c.font="600 "+Math.round(r*0.1)+"px Roboto Condensed,Arial Narrow,sans-serif";c.textAlign="center";c.textBaseline="middle";
+    for(let v=cfg.min;v<=cfg.max+1e-6;v+=cfg.tickMinor){const a=ang(v),maj=Math.abs((v-cfg.min)%cfg.tickMajor)<1e-6;const r1=r*(maj?0.72:0.76),r2=r*0.66;c.lineWidth=maj?2.5:1;
+      c.beginPath();c.moveTo(cx+Math.cos(a)*r1,cy+Math.sin(a)*r1);c.lineTo(cx+Math.cos(a)*r2,cy+Math.sin(a)*r2);c.stroke();
+      if(maj){const rl=r*0.5;c.fillText(String(Math.round(v/(cfg.div||1))),cx+Math.cos(a)*rl,cy+Math.sin(a)*rl);}}
+    const na=ang(st.disp);c.save();c.translate(cx,cy);c.rotate(na);c.strokeStyle=col;c.lineWidth=Math.max(2,r*0.02);c.lineCap="round";c.beginPath();c.moveTo(-r*0.13,0);c.lineTo(r*0.82,0);c.stroke();c.restore();
+    c.beginPath();c.fillStyle=V["--panel-2"];c.arc(cx,cy,r*0.09,0,7);c.fill();c.lineWidth=2;c.strokeStyle=V["--edge"];c.stroke();}
+  initGauge("rpm");initGauge("speed");
+
+  const fmt=(v,c)=>v.toFixed(c.dec);
+  const gearEl=$("#gear"),tripEl=$("#trip"),rpmV=$("#rpm-v"),spdV=$("#speed-v");
+  function updateReadouts(){
+    const rLive=dispState("rpm")==="live",sLive=dispState("speed")==="live";
+    rpmV.textContent=Math.round(S.rpm.disp/10)*10;rpmV.style.color=rLive?SEVCOL[sev("rpm",S.rpm.raw)]:V["--ink-faint"];
+    spdV.textContent=Math.round(S.speed.disp);spdV.style.color=sLive?V["--ink"]:V["--ink-faint"];
+    gearEl.textContent=gearNow<0?"–":(gearNow===0?"N":String(gearNow));tripEl.textContent=tripKm.toFixed(2);
+    TILE_KEYS.forEach(k=>{const c=CFG[k],st=S[k],ref=tileRef[k],ds=dispState(k);const pct=clamp((st.disp-c.min)/(c.max-c.min)*100,0,100);
+      if(ds==="na"){ref.root.dataset.state="na";ref.v.textContent="––";ref.fill.style.width="0%";ref.chip.textContent="N/A";}
+      else if(ds==="stale"){ref.root.dataset.state="stale";ref.v.textContent=st.raw==null?"--":fmt(st.disp,c);ref.fill.style.width=pct+"%";ref.chip.textContent="STALE";}
+      else{const s=sev(k,st.raw);ref.root.dataset.state=s;ref.v.textContent=fmt(st.disp,c);ref.fill.style.width=pct+"%";ref.chip.textContent=(s==="warn"||s==="crit")?s:"";}});}
+
+  const TT=[{id:"mil",label:"CHECK ENGINE"},{id:"fuel",label:"LOW FUEL"},{id:"temp",label:"COOLANT TEMP"},{id:"batt",label:"CHARGE"},{id:"shift",label:"SHIFT UP"}];
+  const ttEl=$("#telltales"),ttRef={};
+  TT.forEach(t=>{const el=document.createElement("div");el.className="tt";el.innerHTML='<span class="led"></span>'+t.label;ttEl.appendChild(el);ttRef[t.id]=el;});
+  function ttState(k){return dispState(k)==="live"?sev(k,S[k].raw):null;}
+  function updateTelltales(){const f=ttState("fuel"),co=ttState("coolant"),vo=ttState("volt"),rp=ttState("rpm");
+    const set=(id,on)=>{if(on)ttRef[id].dataset.on=on;else ttRef[id].removeAttribute("data-on");};
+    set("fuel",f==="crit"?"crit":f==="warn"?"warn":null);set("temp",co==="crit"?"crit":co==="warn"?"warn":null);
+    set("batt",vo==="crit"?"crit":vo==="warn"?"warn":null);
+    set("shift",rp==="crit"?"crit":(dispState("rpm")==="live"&&S.rpm.raw>=6000)?"warn":null);
+    set("mil",[f,co,vo,rp].includes("crit")?"warn":null);}
+
+  let prev=T();
+  function frame(){const t=T(),dt=Math.min(0.1,(t-prev)/1000);prev=t;
+    Object.keys(CFG).forEach(k=>{const st=S[k],target=st.raw==null?CFG[k].min:st.raw;const a=1-Math.exp(-dt/(CFG[k].tau/1000));st.disp+=(target-st.disp)*a;});
+    drawGauge(gauges.rpm);drawGauge(gauges.speed);updateShift();updateTelltales();updateReadouts();requestAnimationFrame(frame);}
+  requestAnimationFrame(frame);
+  poll();setInterval(poll,150);
+})();
+</script>{% endblock %}

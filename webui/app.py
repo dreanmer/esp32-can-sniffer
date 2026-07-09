@@ -16,6 +16,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
+from . import obd2
 from .session import CanSession, autodetect_port
 
 app = Flask(__name__)
@@ -30,9 +31,25 @@ def _err(exc, code=400):
     return jsonify({"ok": False, "error": str(exc)}), code
 
 
+# ---- pages ----
 @app.get("/")
-def index():
-    return render_template("index.html")
+def home():
+    return render_template("home.html")
+
+
+@app.get("/cluster")
+def cluster():
+    return render_template("cluster.html")
+
+
+@app.get("/hardware")
+def hardware():
+    return render_template("hardware.html")
+
+
+@app.get("/obd2")
+def obd2_page():
+    return render_template("obd2.html")
 
 
 @app.get("/api/status")
@@ -47,6 +64,28 @@ def api_status():
 @app.get("/api/live")
 def api_live():
     return jsonify(session.live())
+
+
+@app.get("/api/bus")
+def api_bus():
+    return jsonify(session.bus_stats())
+
+
+@app.get("/api/obd2")
+def api_obd2():
+    live = session.live()
+    st = session.status()
+    code = live["values"].get("obd_std", {}).get("value")
+    return jsonify({
+        "connected": live["connected"],
+        "mode": live["mode"],
+        "scheme": live["scheme"],
+        "supported": st["supported"],
+        "supported_names": live["supported_names"],
+        "supported_count": len(st["supported"]),
+        "obd_standard": obd2.obd_standard_name(code) if code is not None else None,
+        "values": live["values"],
+    })
 
 
 @app.post("/api/connect")

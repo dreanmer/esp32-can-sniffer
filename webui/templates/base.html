@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>{% block title %}CAN Sniffer{% endblock %} · Fiat 500</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="nav">
+  <a class="brand" href="/">FIAT 500 · OBD2</a>
+  <a class="link" href="/">Home</a>
+  <a class="link" href="/cluster">Cluster</a>
+  <a class="link" href="/hardware">Hardware</a>
+  <a class="link" href="/obd2">OBD2 scan</a>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot" id="g-dot"></span> <span id="g-conn">OFFLINE</span></span>
+  <span class="rec" id="g-rec"><span class="led"></span> REC</span>
+  <span class="stat" id="g-frames"></span>
+  <select id="g-mode" title="connection mode">
+    <option value="normal">Normal (OBD2)</option>
+    <option value="listen">Listen-only</option>
+  </select>
+  <button class="btn primary" id="g-connect">Connect</button>
+  <input id="g-label" value="drive" title="recording label">
+  <button class="btn" id="g-record" disabled>● Record</button>
+</nav>
+
+{% block content %}{% endblock %}
+
+<script src="/static/app.js"></script>
+{% block script %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>CAN Sniffer · Fiat 500</h1>
+  <p class="muted">Connect the device with the controls in the top-right, then pick a tool below.
+     The serial port is exclusive, so one tool uses the bus at a time. OBD2 features need
+     <b>Normal</b> mode; passive sniffing/recording works in <b>Listen-only</b>.</p>
+
+  <div class="grid">
+    <a class="card" href="/cluster"><div class="ico">🎛️</div>
+      <h3>Live cluster</h3><p>Car-style instrument dashboard from live OBD2 data (RPM, speed, coolant, fuel…). Needs Normal mode.</p></a>
+    <a class="card" href="/hardware"><div class="ico">🔌</div>
+      <h3>Hardware test</h3><p>Confirm the wiring: frame rate and the busiest CAN IDs on the bus. Works in any mode.</p></a>
+    <a class="card" href="/obd2"><div class="ico">🩺</div>
+      <h3>OBD2 scan</h3><p>Detected addressing (11- vs 29-bit), the OBD standard, and every supported PID. Needs Normal mode.</p></a>
+    <a class="card" href="/static/cluster-demo.html"><div class="ico">▶️</div>
+      <h3>Offline demo</h3><p>The cluster driven by a simulated drive cycle — no hardware needed.</p></a>
+  </div>
+
+  <h2>Recorded logs <span class="muted" style="text-transform:none;letter-spacing:0">(temp-output/, webCAN CSV for the RE skill)</span></h2>
+  <table class="data">
+    <thead><tr><th>File</th><th class="num">Frames</th><th class="num">Size</th></tr></thead>
+    <tbody id="logs"><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block script %}<script>
+(async function(){
+  let j; try{ j=await api("/api/logs"); }catch(e){ j={logs:[]}; }
+  const tb=document.getElementById("logs");
+  if(!j.logs || !j.logs.length){
+    tb.innerHTML='<tr><td colspan="3" class="muted">no logs yet — record from the Cluster, or run tools/record.py</td></tr>';
+    return;
+  }
+  tb.innerHTML=j.logs.map(l=>`<tr><td>${l.name}</td><td class="num">${l.frames==null?"?":l.frames.toLocaleString()}</td><td class="num">${(l.size/1024).toFixed(1)} KB</td></tr>`).join("");
+})();
+</script>{% endblock %}

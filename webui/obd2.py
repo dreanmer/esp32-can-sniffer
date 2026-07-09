@@ -44,6 +44,7 @@ PIDS: dict[int, Pid] = {
     0x0F: Pid(0x0F, "intake",        1, "degC", -40, 215,     lambda d: d[0] - 40),
     0x10: Pid(0x10, "maf",           2, "g/s",  0, 655.35,    lambda d: _u16(d) / 100),
     0x11: Pid(0x11, "throttle",      1, "%",    0, 100,       lambda d: d[0] * 100 / 255),
+    0x1C: Pid(0x1C, "obd_std",       1, "",     0, 255,       lambda d: d[0]),
     0x1F: Pid(0x1F, "runtime",       2, "s",    0, 65535,     lambda d: _u16(d)),
     0x2F: Pid(0x2F, "fuel",          1, "%",    0, 100,       lambda d: d[0] * 100 / 255),
     0x33: Pid(0x33, "baro",          1, "kPa",  0, 255,       lambda d: d[0]),
@@ -55,6 +56,21 @@ PIDS: dict[int, Pid] = {
 
 # Poll these more often (they drive the primary gauges / change fast).
 FAST = {0x0C, 0x0D, 0x11, 0x04, 0x10}
+
+# OBD standard a vehicle conforms to (PID 0x1C code -> name). Abridged SAE table.
+OBD_STANDARDS = {
+    1: "OBD-II (CARB)", 2: "OBD (EPA)", 3: "OBD and OBD-II", 4: "OBD-I",
+    5: "not OBD compliant", 6: "EOBD", 7: "EOBD and OBD-II", 8: "EOBD and OBD",
+    9: "EOBD, OBD and OBD-II", 10: "JOBD", 11: "JOBD and OBD-II",
+    12: "JOBD and EOBD", 13: "JOBD, EOBD and OBD-II",
+}
+
+
+def obd_standard_name(code) -> str:
+    try:
+        return OBD_STANDARDS.get(int(code), f"code {int(code)}")
+    except (TypeError, ValueError):
+        return "unknown"
 
 # Supported-PID bitmask query PIDs (each returns a 32-bit mask for the next block).
 BITMASK_PIDS = {0x00, 0x20, 0x40, 0x60, 0x80}
