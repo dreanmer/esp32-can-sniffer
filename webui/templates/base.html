@@ -9,7 +9,7 @@
 <body>
 <div class="layout">
   <aside class="sidebar">
-    <div class="brand">CAN Sniffer<small>Fiat 500 · ESP32-C6</small></div>
+    <div class="brand">CAN Sniffer<small>ESP32-C6 · SLCAN</small></div>
     <nav>
       <a href="/">Dashboard</a>
       <a href="/diagnostics">Diagnostics</a>
@@ -25,6 +25,11 @@
       <span class="rec" id="c-rec"><span class="led"></span> REC</span>
       <span class="conn"><span class="dot" id="c-dot"></span><span id="c-conn">Disconnected</span></span>
       <span class="conn mono" id="c-frames" style="font-size:12px"></span>
+      <select id="c-transport" title="transport">
+        <option value="usb">USB</option>
+        <option value="wifi">Wi-Fi</option>
+      </select>
+      <input id="c-host" value="192.168.4.1:3333" size="15" title="Wi-Fi host:port" style="display:none">
       <select id="c-mode" title="connection mode">
         <option value="normal">Normal (OBD2)</option>
         <option value="listen">Listen-only</option>

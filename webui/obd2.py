@@ -5,7 +5,7 @@ bundled OBD-v4.4.dbc and the SAE/Wikipedia OBD-II PID table.
 
 Supports both addressing schemes:
   * 11-bit: request 0x7DF          -> responses 0x7E8..0x7EF
-  * 29-bit: request 0x18DB33F1     -> responses 0x18DAF1xx   (the Fiat 500 uses this)
+  * 29-bit: request 0x18DB33F1     -> responses 0x18DAF1xx   (common on newer vehicles)
 
 Signal names match the web dashboard's gauge/tile keys.
 """

@@ -5,9 +5,9 @@ Pages:  /            Dashboard  (connect, record raw+OBD2, key live values)
         /diagnostics OBD2 diagnostics (addressing, standard, supported PIDs)
         /frames      Live raw CAN monitor (filter, plot, import a .dbc to decode)
 
-Run (default localhost:80 needs root on macOS/Linux):
-    sudo .venv/bin/python -m webui.app
-    PORT=8080 .venv/bin/python -m webui.app        # unprivileged
+Run:
+    .venv/bin/python -m webui.app                  # http://localhost:5000
+    PORT=5050 HOST=0.0.0.0 .venv/bin/python -m webui.app
 """
 from __future__ import annotations
 
@@ -96,7 +96,9 @@ def api_connect():
     try:
         return _ok(**session.connect(mode=b.get("mode", "normal"),
                                      bitrate=int(b.get("bitrate", 500000)),
-                                     port=b.get("port") or None))
+                                     port=b.get("port") or None,
+                                     transport=b.get("transport", "usb"),
+                                     host=b.get("host") or None))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -166,15 +168,12 @@ def api_dbc_clear():
 
 def main():
     host = os.environ.get("HOST", "localhost")
-    port = int(os.environ.get("PORT", "80"))
-    print(f"CAN web UI on http://{host}:{port}  (device: {autodetect_port() or 'none detected'})")
+    port = int(os.environ.get("PORT", "5000"))
+    print(f"CAN web UI on http://{host}:{port}  (USB device: {autodetect_port() or 'none detected'})")
     try:
         app.run(host=host, port=port, threaded=True, debug=False)
     except PermissionError:
-        print(f"\nPermission denied binding port {port}. Ports < 1024 need root:\n"
-              f"  sudo .venv/bin/python -m webui.app\n"
-              f"or run unprivileged on another port:\n"
-              f"  PORT=8080 .venv/bin/python -m webui.app")
+        print(f"\nCannot bind port {port} (needs root if < 1024). Set another: PORT=5050 ...")
         raise SystemExit(1)
 
 

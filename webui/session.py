@@ -118,23 +118,30 @@ class CanSession:
         self.history: dict[int, deque] = {}
         self.frame_count = 0
         self.port: Optional[str] = None
+        self.transport: Optional[str] = None
         self.bitrate = 500000
         # imported DBC (persists across connections)
         self.db = None
         self.db_name: Optional[str] = None
 
     # ---- lifecycle ----
-    def connect(self, mode="normal", bitrate=500000, port=None) -> dict:
+    def connect(self, mode="normal", bitrate=500000, port=None,
+                transport="usb", host=None) -> dict:
         with self.lock:
             if self.bus is not None:
                 raise RuntimeError("already connected")
-        port = port or autodetect_port()
-        if not port:
-            raise RuntimeError("no serial port found")
-        bus = can.Bus(interface="slcan", channel=port, bitrate=bitrate,
+        if transport == "wifi":
+            host = host or "192.168.4.1:3333"
+            channel = host if host.startswith("socket://") else f"socket://{host}"
+        else:
+            channel = port or autodetect_port()
+            if not channel:
+                raise RuntimeError("no USB serial port found (or connect via Wi-Fi)")
+        bus = can.Bus(interface="slcan", channel=channel, bitrate=bitrate,
                       listen_only=(mode == "listen"))
         with self.lock:
-            self.bus = bus; self.port = port; self.bitrate = bitrate; self.mode = mode
+            self.bus = bus; self.port = channel; self.transport = transport
+            self.bitrate = bitrate; self.mode = mode
             self.scheme = None; self.supported = []; self.values = {}
             self.id_meta = {}; self.history = {}; self.frame_count = 0
         self.notifier = can.Notifier([bus], [_RxListener(self)])
@@ -238,6 +245,7 @@ class CanSession:
         with self.lock:
             return {
                 "connected": self.bus is not None, "port": self.port, "mode": self.mode,
+                "transport": self.transport,
                 "scheme": self.scheme, "bitrate": self.bitrate, "recording": self.log_path,
                 "frame_count": self.frame_count, "unique_ids": len(self.id_meta),
                 "supported": [f"0x{p:02X}" for p in self.supported],

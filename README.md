@@ -88,10 +88,11 @@ bitrate/pins/ground are wrong.
 Output → `temp-output/trace_<label>.csv` in the exact **webCAN CSV** format the
 reverse-engineering skill reads.
 
-## Web dashboard (live gauges + recording)
+## Web console
 
-A small admin console with a sidebar menu and a global connection bar (the serial
-port is exclusive — one page uses the bus at a time). Three tools:
+A small self-contained admin console (no internet needed — all CSS/JS is local,
+no CDN/build step) with a sidebar menu and a global connection bar. The device is
+exclusive, so one page uses the bus at a time. Three tools:
 
 - **Dashboard** (`/`) — connect, **Record** raw+OBD2, frame rate, and key live OBD2
   values (RPM, speed, coolant, fuel, throttle, load, module voltage) as stat tiles.
@@ -102,18 +103,22 @@ port is exclusive — one page uses the bus at a time). Three tools:
   byte or decoded signal over time.
 
 ```bash
-sudo .venv/bin/python -m webui.app          # default localhost:80 (root for port 80)
-PORT=8080 .venv/bin/python -m webui.app     # or unprivileged on another port
+.venv/bin/python -m webui.app               # http://localhost:5000
 ```
 
-Pick **Normal** mode → **Connect** (top-right); **Record** writes the raw proprietary
-bus **plus** the OBD2 responses to `temp-output/trace_<label>.csv` — the exact log the
-reverse-engineering skill decodes.
+In the top-right bar pick the **transport** and **Connect**:
+- **USB** — auto-detects the plugged-in device.
+- **Wi-Fi** — join the board's access point **`CANSNIFFER-xxxx`** (password
+  `cansniffer`), then connect to host `192.168.4.1:3333` (the default in the field).
 
-- One process owns the serial port: a background thread decodes OBD2 responses into a
+Then pick **Normal** mode; **Record** writes the raw proprietary bus **plus** the OBD2
+responses to `temp-output/trace_<label>.csv` — the exact log the reverse-engineering
+skill decodes.
+
+- One process owns the device: a background thread decodes OBD2 responses into a
   snapshot the pages poll (`/api/live`, `/api/frames`), tees all frames to a
   `can.Logger` when recording, and a poller does self-healing PID discovery (tries
-  11-bit and 29-bit, so it auto-detects the Fiat's 29-bit OBD2 and recovers when the
+  11-bit and 29-bit, auto-detecting the vehicle's addressing and recovering when the
   bus wakes).
 - **Listen-only** mode records passively (no OBD2 values — OBD2 needs requests).
 
@@ -159,8 +164,15 @@ The firmware implements the SLCAN commands python-can's `slcan` backend uses:
 Received frames are streamed back as `tIIILDD…\r` (std) / `TIIIIIIIILDD…\r` (ext).
 python-can stamps each with the host clock, which becomes the CSV `TimestampEpoch`.
 
+The firmware speaks this SLCAN over **two transports at once**:
+- **USB-CDC** — `channel="/dev/cu.usbmodemXXXX"`
+- **Wi-Fi SoftAP + TCP** — the board hosts AP `CANSNIFFER-xxxx` (pw `cansniffer`,
+  IP `192.168.4.1`) and a TCP SLCAN server on port 3333, so
+  `channel="socket://192.168.4.1:3333"` works (pyserial's `socket://` handler).
+  Set `-DENABLE_WIFI=0` to disable the AP. One host at a time.
+
 Because it's standard SLCAN it also works with **SavvyCAN**, **cangaroo**, and
-`can-utils` `slcand`.
+`can-utils` `slcand` (over USB or the TCP socket).
 
 ## Troubleshooting
 

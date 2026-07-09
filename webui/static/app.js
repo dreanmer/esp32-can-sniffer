@@ -31,17 +31,28 @@
     rb.classList.toggle("danger", !!st.recording);
     rb.disabled = !c;
     $("#c-mode").disabled = c;
+    $("#c-transport").disabled = c;
+    $("#c-host").disabled = c;
   }
   window.canRefresh = refresh;
+
+  function syncTransport() {
+    $("#c-host").style.display = $("#c-transport").value === "wifi" ? "" : "none";
+  }
 
   document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".sidebar nav a").forEach(a => {
       if (a.getAttribute("href") === location.pathname) a.classList.add("active");
     });
+    $("#c-transport").addEventListener("change", syncTransport);
+    syncTransport();
     $("#c-connect").addEventListener("click", async () => {
       if (st.connected) await window.api("/api/disconnect", {});
       else {
-        const r = await window.api("/api/connect", { mode: $("#c-mode").value, bitrate: 500000 });
+        const r = await window.api("/api/connect", {
+          mode: $("#c-mode").value, bitrate: 500000,
+          transport: $("#c-transport").value, host: $("#c-host").value,
+        });
         if (!r.ok) alert("Connect failed: " + r.error);
       }
       refresh();
