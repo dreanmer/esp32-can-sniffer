@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# PlatformIO
+firmware/.pio/
+firmware/.pioenvs/
+firmware/.piolibdeps/
+
+# Reverse-engineering skill outputs
+temp-output/
+decoding-output/
+
+# Claude Code local config + bundled third-party RE skills (not part of this repo)
+.claude/
+
+# OS
+.DS_Store

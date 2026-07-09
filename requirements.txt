@@ -1,0 +1,24 @@
+# Host-side Python deps for the CAN sniffer + the cansub-reverse-engineering skill.
+# Install into the project-local venv (at the repo root):
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# --- sniffer / recording (tools/*.py) ---
+python-can>=4.6.0
+pyserial>=3.5                 # REQUIRED by python-can's slcan interface
+python-can-cansub>=2026.6.2   # registers the webCAN ".csv" reader/writer the skill uses
+
+# --- reverse-engineering skill pipeline ---
+cantools>=41.0
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+matplotlib>=3.8
+
+# --- phase 2: live human-reference Flask app (optional) ---
+flask>=3.0
+
+# --- phase 3: vision reference from a video (optional, heavy) ---
+# Uncomment only if you use the VISION workflow (OCR a dashboard video):
+# rapidocr>=2
+# onnxruntime>=1.17
+# opencv-python>=4.9
