@@ -30,6 +30,10 @@ firmware/            PlatformIO project (Arduino, ESP32-C6)
 tools/
   record.py          capture bus -> temp-output/trace_<label>.csv (webCAN CSV)
   check_device.py    quick "is it wired right / are frames flowing?" check
+  obd2_test.py       probe OBD2 support (11-bit + 29-bit) and decode PIDs
+webui/               Flask web UI: live OBD2 dashboard + recording controls
+  app.py  session.py  obd2.py  templates/index.html
+cluster.html         standalone offline dashboard demo (open in a browser, no backend)
 docs/hardware.md     wiring, OBD2 pinout, termination & safety notes
 requirements.txt     host Python deps (venv at repo root)
 .claude/skills/      cansub-reverse-engineering, combine-dbc, cansub-knowledge
@@ -82,6 +86,28 @@ bitrate/pins/ground are wrong.
 
 Output → `temp-output/trace_<label>.csv` in the exact **webCAN CSV** format the
 reverse-engineering skill reads.
+
+## Web dashboard (live gauges + recording)
+
+A browser UI that shows a car-style instrument cluster from live OBD2 data and
+records the raw proprietary bus **plus** the OBD2 responses to a webCAN CSV in one
+click — the exact log the reverse-engineering skill decodes.
+
+```bash
+.venv/bin/python -m webui.app        # -> http://127.0.0.1:5000
+```
+
+Then in the browser: pick **Normal** mode → **Connect** → the gauges fill in (RPM,
+speed, coolant, fuel, throttle, load, intake, MAF, module voltage), and **Record
+raw + OBD2** writes `temp-output/trace_<label>.csv`.
+
+- One process owns the serial port: the app runs a background thread that decodes
+  OBD2 responses into a live snapshot the browser polls (`/api/live`), while a
+  poller thread does self-healing PID discovery (tries 11-bit and 29-bit, so it
+  auto-detects the Fiat's 29-bit OBD2 and recovers when the bus wakes).
+- **Listen-only** mode records passively (no dashboard data — OBD2 needs requests).
+- `cluster.html` is a standalone demo with simulated data — open it directly in a
+  browser to preview the UI without hardware.
 
 ### Getting a decodable reference (recommended)
 

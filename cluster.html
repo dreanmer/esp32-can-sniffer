@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>OBD2 Instrument Cluster — Fiat 500</title>
+</head>
+<body>
+<style>
+  /* ===================================================================
+     OBD2 INSTRUMENT CLUSTER — reference implementation
+     Single-theme by design: this is a night-cockpit display. It commits
+     to a dark ground and ignores the viewer light/dark toggle on purpose.
+     No frameworks, no external assets — works offline from a file:// URL.
+     =================================================================== */
+  :root{
+    color-scheme: dark;
+    /* --- grounds: blue-black, not pure black (less smear on cheap panels) --- */
+    --bg:        #070A10;
+    --bg-2:      #0A0E16;
+    --panel:     #0E131D;
+    --panel-2:   #131A26;
+    --edge:      #223044;
+    --edge-soft: #18212F;
+    /* --- ink: cool off-white digits, cyan-biased greys for labels --- */
+    --ink:       #EAF2F7;
+    --ink-dim:   #93A3B4;
+    --ink-faint: #566274;
+    /* --- primary instrument accent + semantic telltale colors --- */
+    --cyan:      #2FE0D2;
+    --cyan-glow: #2FE0D2;
+    --cold:      #4FA6FF;
+    --ok:        #38D07C;
+    --warn:      #FFB020;
+    --crit:      #FF3B47;
+
+    --font-data: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    --font-ui:   "Roboto Condensed", "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
+
+    --gap: clamp(8px, 1.2vw, 16px);
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background:
+      radial-gradient(120% 90% at 50% -10%, #0E1420 0%, var(--bg) 60%, #05070C 100%);
+    color:var(--ink);
+    font-family:var(--font-ui);
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+
+  .cluster{
+    min-height:100vh;
+    display:grid;
+    grid-template-rows:auto auto 1fr auto auto;
+    gap:var(--gap);
+    padding:clamp(10px,1.4vw,20px);
+    max-width:1600px;
+    margin:0 auto;
+  }
+
+  /* ---------- status bar ---------- */
+  .statusbar{
+    display:flex; align-items:center; gap:16px;
+    padding:6px 14px;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    border:1px solid var(--edge-soft);
+    border-radius:12px;
+    font-size:clamp(11px,1vw,13px);
+    letter-spacing:.14em; text-transform:uppercase;
+  }
+  .sb-conn{ display:flex; align-items:center; gap:8px; color:var(--ink-dim); }
+  .dot{ width:9px; height:9px; border-radius:50%; background:var(--ok);
+        box-shadow:0 0 10px var(--ok); animation:pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
+  .sb-src{ color:var(--warn); font-weight:700; }
+  .sb-title{ margin-left:auto; margin-right:auto; color:var(--ink);
+             font-weight:700; letter-spacing:.28em; font-size:1.05em; }
+  .sb-metric{ font-family:var(--font-data); color:var(--ink);
+              letter-spacing:.02em; font-variant-numeric:tabular-nums; }
+  .sb-metric b{ color:var(--cyan); font-weight:700; }
+  .sb-btns{ display:flex; gap:6px; }
+  .sb-btn{
+    font-family:var(--font-ui); font-size:.85em; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-dim); background:var(--panel-2); border:1px solid var(--edge);
+    border-radius:8px; padding:5px 10px; cursor:pointer; min-width:34px;
+  }
+  .sb-btn:hover{ color:var(--ink); border-color:var(--cyan); }
+  .sb-btn:focus-visible{ outline:2px solid var(--cyan); outline-offset:2px; }
+
+  /* ---------- shift-light strip ---------- */
+  .shiftlights{
+    display:flex; justify-content:center; gap:6px; padding:4px 0;
+  }
+  .sl{ width:min(3.2vw,42px); height:9px; border-radius:3px;
+       background:#141b26; border:1px solid var(--edge-soft); transition:opacity .05s; }
+  .sl[data-on="g"]{ background:var(--ok);   box-shadow:0 0 10px var(--ok); border-color:var(--ok); }
+  .sl[data-on="a"]{ background:var(--warn); box-shadow:0 0 10px var(--warn); border-color:var(--warn); }
+  .sl[data-on="r"]{ background:var(--crit); box-shadow:0 0 12px var(--crit); border-color:var(--crit); }
+  .shiftlights.redline .sl[data-on="r"]{ animation:flash .18s steps(1) infinite; }
+  @keyframes flash{ 50%{opacity:.15} }
+
+  /* ---------- hero: two big gauges + center column ---------- */
+  .hero{
+    display:flex; align-items:center; justify-content:center;
+    gap:clamp(12px,3vw,48px);
+    min-height:0;
+  }
+  .gauge{
+    --sz: min(40vw, 52vh, 440px);
+    position:relative; width:var(--sz); height:var(--sz);
+    flex:0 0 auto;
+  }
+  .gauge canvas{ width:100%; height:100%; display:block; }
+  .hub{
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; pointer-events:none; gap:2px;
+    transform:translateY(4%);
+  }
+  .hub-val{
+    font-family:var(--font-data); font-weight:700;
+    font-size:calc(var(--sz)*0.26); line-height:.92;
+    letter-spacing:-0.03em; font-variant-numeric:tabular-nums;
+    color:var(--ink);
+    text-shadow:0 0 22px rgba(47,224,210,.25);
+  }
+  .hub-unit{ font-size:calc(var(--sz)*0.055); letter-spacing:.24em;
+             text-transform:uppercase; color:var(--ink-dim); }
+  .hub-cap{ font-size:calc(var(--sz)*0.05); letter-spacing:.3em;
+            text-transform:uppercase; color:var(--ink-faint); margin-top:calc(var(--sz)*0.03); }
+
+  .center-col{
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    align-self:center;
+  }
+  .gear{
+    font-family:var(--font-data); font-weight:700;
+    font-size:clamp(40px,6vw,84px); line-height:1;
+    color:var(--cyan); text-shadow:0 0 26px rgba(47,224,210,.4);
+    width:1.5em; text-align:center;
+    border:1px solid var(--edge); border-radius:14px; padding:.08em .1em .02em;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  }
+  .gear-lbl,.trip{ font-size:clamp(10px,1vw,12px); letter-spacing:.24em;
+                   text-transform:uppercase; color:var(--ink-faint); }
+  .trip b{ font-family:var(--font-data); color:var(--ink-dim); font-weight:600;
+           font-variant-numeric:tabular-nums; letter-spacing:0; }
+
+  /* ---------- secondary tiles ---------- */
+  .tiles{
+    display:grid; gap:var(--gap);
+    grid-template-columns:repeat(auto-fit, minmax(148px,1fr));
+  }
+  .tile{
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    border:1px solid var(--edge-soft); border-radius:12px;
+    padding:10px 12px 12px; display:flex; flex-direction:column; gap:8px;
+    position:relative; overflow:hidden;
+  }
+  /* left severity stripe */
+  .tile::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
+                 background:var(--stripe,transparent); }
+  .tile-head{ display:flex; align-items:baseline; justify-content:space-between; }
+  .tile-label{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-dim); }
+  .tile-pid{ font-family:var(--font-data); font-size:9.5px; color:var(--ink-faint); letter-spacing:0; }
+  .tile-val{ font-family:var(--font-data); font-variant-numeric:tabular-nums;
+             display:flex; align-items:baseline; gap:4px; }
+  .tile-val .v{ font-size:clamp(26px,3.2vw,40px); font-weight:700; letter-spacing:-0.02em;
+                color:var(--valcol,var(--cyan)); line-height:1; }
+  .tile-val .u{ font-size:13px; color:var(--ink-dim); font-family:var(--font-ui); letter-spacing:.05em; }
+  .bar{ position:relative; height:8px; border-radius:5px; background:#0c121b;
+        border:1px solid var(--edge-soft); overflow:hidden; }
+  .bar-fill{ position:absolute; inset:0 auto 0 0; width:0%;
+             background:var(--valcol,var(--cyan)); border-radius:5px;
+             transition:width .12s linear, background .2s; }
+  .bar-tick{ position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--ink-faint); opacity:.7; }
+  .bar-tick.warn{ background:var(--warn); }
+  .bar-tick.crit{ background:var(--crit); }
+  .tile-range{ display:flex; justify-content:space-between;
+               font-family:var(--font-data); font-size:10px; color:var(--ink-faint);
+               font-variant-numeric:tabular-nums; }
+  .chip{ font-size:9px; letter-spacing:.14em; text-transform:uppercase;
+         padding:2px 6px; border-radius:5px; border:1px solid transparent; }
+  .chip:empty{ display:none; }
+
+  /* per-state tile styling */
+  .tile[data-state="ok"]{   --stripe:transparent; --valcol:var(--cyan); }
+  .tile[data-state="cold"]{ --stripe:var(--cold);  --valcol:var(--cold); }
+  .tile[data-state="warn"]{ --stripe:var(--warn);  --valcol:var(--warn);
+        border-color:rgba(255,176,32,.35); }
+  .tile[data-state="warn"] .chip{ color:var(--warn); border-color:rgba(255,176,32,.4); }
+  .tile[data-state="crit"]{ --stripe:var(--crit);  --valcol:var(--crit);
+        border-color:rgba(255,59,71,.5); animation:critpulse 1s ease-in-out infinite; }
+  .tile[data-state="crit"] .chip{ color:var(--crit); border-color:rgba(255,59,71,.5); }
+  @keyframes critpulse{ 0%,100%{box-shadow:0 0 0 rgba(255,59,71,0)} 50%{box-shadow:0 0 16px rgba(255,59,71,.35)} }
+
+  /* no-data states */
+  .tile[data-state="stale"]{ --valcol:var(--ink-dim); }
+  .tile[data-state="stale"] .tile-val .v{ opacity:.5; }
+  .tile[data-state="stale"] .bar-fill{ opacity:.4; }
+  .tile[data-state="stale"] .chip{ color:var(--warn); border-color:rgba(255,176,32,.35); }
+  .tile[data-state="na"]{ --valcol:var(--ink-faint);
+        background:repeating-linear-gradient(135deg,var(--panel) 0 8px,var(--bg-2) 8px 16px);
+        border-style:dashed; border-color:var(--edge); }
+  .tile[data-state="na"] .tile-val .v{ color:var(--ink-faint); }
+  .tile[data-state="na"] .bar{ opacity:.3; }
+  .tile[data-state="na"] .chip{ color:var(--ink-faint); border-color:var(--edge); }
+  .tile[data-state="na"] .tile-range{ opacity:.4; }
+
+  /* ---------- telltale strip ---------- */
+  .telltales{
+    display:flex; gap:10px; justify-content:center; flex-wrap:wrap;
+    padding:8px; background:var(--bg-2); border:1px solid var(--edge-soft); border-radius:12px;
+  }
+  .tt{ display:flex; align-items:center; gap:7px; padding:6px 12px; border-radius:8px;
+       border:1px solid var(--edge-soft); background:var(--panel);
+       font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); }
+  .tt .led{ width:8px; height:8px; border-radius:50%; background:var(--edge); }
+  .tt[data-on="warn"]{ color:var(--warn); border-color:rgba(255,176,32,.5); }
+  .tt[data-on="warn"] .led{ background:var(--warn); box-shadow:0 0 10px var(--warn); }
+  .tt[data-on="crit"]{ color:var(--crit); border-color:rgba(255,59,71,.6); animation:flash .5s steps(1) infinite; }
+  .tt[data-on="crit"] .led{ background:var(--crit); box-shadow:0 0 12px var(--crit); }
+  .tt[data-on="ok"]{ color:var(--cyan); border-color:rgba(47,224,210,.4); }
+  .tt[data-on="ok"] .led{ background:var(--cyan); box-shadow:0 0 10px var(--cyan); }
+
+  /* ---------- help overlay ---------- */
+  .overlay{ position:fixed; inset:0; background:rgba(4,6,10,.86); z-index:50;
+            display:none; align-items:center; justify-content:center; padding:20px; }
+  .overlay.open{ display:flex; }
+  .sheet{ max-width:720px; width:100%; max-height:86vh; overflow-y:auto;
+          background:var(--panel); border:1px solid var(--edge); border-radius:16px; padding:24px 28px; }
+  .sheet h2{ margin:0 0 4px; letter-spacing:.1em; font-size:20px; }
+  .sheet p{ color:var(--ink-dim); font-size:13px; line-height:1.6; margin:.3em 0 1em; }
+  .sheet h3{ font-size:12px; letter-spacing:.18em; text-transform:uppercase;
+             color:var(--cyan); margin:18px 0 8px; }
+  .legend{ display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px; }
+  .legend span{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--ink-dim); }
+  .sw{ width:14px; height:14px; border-radius:4px; }
+  table.spec{ width:100%; border-collapse:collapse; font-size:12px; }
+  table.spec th,table.spec td{ text-align:left; padding:5px 8px; border-bottom:1px solid var(--edge-soft); }
+  table.spec th{ color:var(--ink-faint); text-transform:uppercase; letter-spacing:.1em; font-weight:600; font-size:10.5px; }
+  table.spec td{ font-family:var(--font-data); color:var(--ink-dim); font-variant-numeric:tabular-nums; }
+  table.spec td:first-child{ font-family:var(--font-ui); color:var(--ink); }
+  .sheet-close{ float:right; }
+
+  @media (prefers-reduced-motion: reduce){
+    .dot,.tile[data-state="crit"],.shiftlights.redline .sl,.tt[data-on="crit"]{ animation:none !important; }
+  }
+  @media (max-width: 760px){
+    .hero{ flex-direction:column; }
+    .center-col{ order:-1; flex-direction:row; gap:20px; }
+    .gauge{ --sz:min(78vw,340px); }
+  }
+</style>
+
+<div class="cluster">
+  <!-- ===== status bar ===== -->
+  <div class="statusbar">
+    <div class="sb-conn"><span class="dot"></span> <span id="conn">LINK OK</span> · <span class="sb-src">DEMO DATA</span></div>
+    <div class="sb-title">FIAT 500 · OBD2</div>
+    <div class="sb-metric">BATT <b id="sb-volt">--.-</b> V</div>
+    <div class="sb-metric" id="clock" style="min-width:8ch;text-align:right">--:--:--</div>
+    <div class="sb-btns">
+      <button class="sb-btn" id="btn-play" title="Pause / resume feed">❚❚</button>
+      <button class="sb-btn" id="btn-states" title="Cycle a sensor through live / stale / N/A">MAF: LIVE</button>
+      <button class="sb-btn" id="btn-full" title="Fullscreen">⛶</button>
+      <button class="sb-btn" id="btn-help" title="Ranges & thresholds">?</button>
+    </div>
+  </div>
+
+  <!-- ===== shift lights ===== -->
+  <div class="shiftlights" id="shift"></div>
+
+  <!-- ===== hero ===== -->
+  <div class="hero">
+    <div class="gauge" data-key="rpm">
+      <canvas></canvas>
+      <div class="hub">
+        <div class="hub-val" id="rpm-v">0</div>
+        <div class="hub-unit">rpm ×1000</div>
+        <div class="hub-cap">ENGINE</div>
+      </div>
+    </div>
+
+    <div class="center-col">
+      <div class="gear-lbl">GEAR</div>
+      <div class="gear" id="gear">N</div>
+      <div class="trip">TRIP <b id="trip">0.00</b> km</div>
+    </div>
+
+    <div class="gauge" data-key="speed">
+      <canvas></canvas>
+      <div class="hub">
+        <div class="hub-val" id="speed-v">0</div>
+        <div class="hub-unit">km/h</div>
+        <div class="hub-cap">VEHICLE</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== tiles (built by JS) ===== -->
+  <div class="tiles" id="tiles"></div>
+
+  <!-- ===== telltales ===== -->
+  <div class="telltales" id="telltales"></div>
+</div>
+
+<!-- ===== help / spec overlay ===== -->
+<div class="overlay" id="overlay">
+  <div class="sheet">
+    <button class="sb-btn sheet-close" id="btn-close">CLOSE</button>
+    <h2>Ranges &amp; thresholds</h2>
+    <p>Tuned for a small gasoline engine (Fiat 500, 1.2 / 0.9&nbsp;TwinAir). All values are simulated by a looping drive cycle so you can see every gauge, warning band and no-data state without hardware connected.</p>
+
+    <h3>Sensor / display state</h3>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--cyan)"></i>Normal</span>
+      <span><i class="sw" style="background:var(--cold)"></i>Cold</span>
+      <span><i class="sw" style="background:var(--warn)"></i>Warning</span>
+      <span><i class="sw" style="background:var(--crit)"></i>Critical</span>
+      <span><i class="sw" style="background:var(--ink-dim)"></i>Stale (feed paused)</span>
+      <span><i class="sw" style="background:var(--ink-faint)"></i>N/A (PID unsupported)</span>
+    </div>
+    <p>Warnings never fire on stale or unsupported data — a missing PID stays neutral grey and is excluded from the telltale strip.</p>
+
+    <h3>Thresholds</h3>
+    <div style="overflow-x:auto">
+    <table class="spec">
+      <thead><tr><th>Signal</th><th>PID</th><th>Range</th><th>Normal</th><th>Warn</th><th>Critical</th></tr></thead>
+      <tbody id="spec-body"></tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const clamp = (v,a,b) => v<a?a:v>b?b:v;
+  const smooth = (a,b,x)=>{ x=clamp((x-a)/(b-a),0,1); return x*x*(3-2*x); };
+  const T = () => performance.now();
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // resolve CSS custom-property colors once
+  const RS = getComputedStyle(document.documentElement);
+  const V = {}; ["--ink","--ink-dim","--ink-faint","--edge","--edge-soft","--panel","--panel-2",
+               "--cyan","--cold","--ok","--warn","--crit"].forEach(k=>V[k]=RS.getPropertyValue(k).trim());
+  const SEVCOL = { ok:V["--cyan"], cold:V["--cold"], warn:V["--warn"], crit:V["--crit"], na:V["--ink-faint"] };
+
+  // ---------------- sensor config ----------------
+  const CFG = {
+    rpm:     {label:"ENGINE",      unit:"rpm",  pid:"01 0C", min:0,   max:7000, tau:90,  dec:0, div:1000,
+              tickMajor:1000, tickMinor:500, zones:[[6000,6500,"warn"],[6500,7000,"crit"]],
+              warnHigh:6000, critHigh:6500 },
+    speed:   {label:"VEHICLE",     unit:"km/h", pid:"01 0D", min:0,   max:180,  tau:230, dec:0, div:1,
+              tickMajor:40, tickMinor:20 },
+    coolant: {label:"COOLANT",     unit:"°C",   pid:"01 05", min:40,  max:120,  tau:650, dec:0,
+              coldBelow:70, warnHigh:110, critHigh:120, ticks:[70,110,120] },
+    fuel:    {label:"FUEL",        unit:"%",    pid:"01 2F", min:0,   max:100,  tau:850, dec:0,
+              warnLow:15, critLow:8, ticks:[8,15] },
+    throttle:{label:"THROTTLE",    unit:"%",    pid:"01 11", min:0,   max:100,  tau:180, dec:0 },
+    load:    {label:"ENGINE LOAD", unit:"%",    pid:"01 04", min:0,   max:100,  tau:230, dec:0,
+              warnHigh:90, ticks:[90] },
+    intake:  {label:"INTAKE AIR",  unit:"°C",   pid:"01 0F", min:-10, max:80,   tau:750, dec:0,
+              warnHigh:60, ticks:[60] },
+    maf:     {label:"MAF",         unit:"g/s",  pid:"01 10", min:0,   max:100,  tau:400, dec:1 },
+    volt:    {label:"MODULE VOLT", unit:"V",    pid:"01 42", min:8,   max:16,   tau:500, dec:1,
+              critLow:11.5, warnLow:12.2, warnHigh:15.0, ticks:[11.5,12.2,15.0] },
+  };
+  const TILE_KEYS = ["coolant","fuel","throttle","load","intake","maf","volt"];
+  const FAST = ["rpm","speed","throttle","load"];          // ~15 Hz poll group
+  const SLOW = ["coolant","fuel","intake","maf","volt"];   // ~1 Hz poll group
+
+  const S = {};
+  Object.keys(CFG).forEach(k => S[k] = { raw:null, disp:CFG[k].min, supported:true, last:0 });
+
+  function sev(k,v){
+    if(v==null) return "na";
+    const c=CFG[k];
+    if(c.critLow!=null  && v<=c.critLow)  return "crit";
+    if(c.critHigh!=null && v>=c.critHigh) return "crit";
+    if(c.warnLow!=null  && v<=c.warnLow)  return "warn";
+    if(c.warnHigh!=null && v>=c.warnHigh) return "warn";
+    if(c.coldBelow!=null&& v< c.coldBelow) return "cold";
+    return "ok";
+  }
+  function dispState(k){
+    const st=S[k];
+    if(!st.supported) return "na";
+    const staleMs = FAST.includes(k) ? 900 : 2600;
+    if(T()-st.last > staleMs) return "stale";
+    return "live";
+  }
+
+  // ---------------- simulated drive cycle ----------------
+  let T0 = T();
+  const KF = [[0,0],[5,0],[13,68],[23,86],[31,80],[37,28],[42,0],[46,0]];  // [t(s), speed]
+  function speedAt(t){ t=((t%46)+46)%46;
+    for(let i=0;i<KF.length-1;i++){ const [a,s0]=KF[i],[b,s1]=KF[i+1];
+      if(t>=a && t<=b) return s0+(s1-s0)*smooth(a,b,t); } return 0; }
+  const GBAND=[0,20,42,68,95], GRATIO=[95,66,47,36,29];
+  function gearOf(sp){ let g=0; for(let i=0;i<GBAND.length;i++) if(sp>=GBAND[i]) g=i; return g; }
+
+  function trueVals(){
+    const tA=(T()-T0)/1000, t=tA;
+    const sp = Math.max(0, speedAt(t) + Math.sin(t*3)*0.4);
+    const a  = (speedAt(t+0.15)-speedAt(t-0.15))/0.3;   // km/h per s
+    const g  = gearOf(sp);
+    let rpm = sp<1 ? 820+Math.sin(t*7)*35
+                   : 1150 + (sp-GBAND[g])*GRATIO[g] + Math.sin(t*5)*40;
+    rpm = clamp(rpm,600,6800);
+    const thr  = sp<1 ? 0 : clamp(7 + Math.max(0,a)*2.6 + (a>-3?6:0), 0, 100);
+    const load = clamp(12 + thr*0.62 + (rpm/7000)*18, 0, 100);
+    const maf  = clamp(2 + (load/100)*(0.3+rpm/7000)*62, 0, 100);
+    const cool = 40 + smooth(0,55,tA)*52 + Math.sin(tA*0.4)*1.2;
+    const fuel = clamp(20 - tA*0.17, 3, 100);            // drains to low-fuel to demo warning
+    const volt = tA<1.3 ? 9.6+tA*2 : 14.25 + Math.sin(tA*0.8)*0.12 - thr/100*0.35;
+    const intk = 26 + smooth(0,110,tA)*11 + load/100*5;
+    return { rpm, speed:sp, throttle:thr, load, maf, coolant:cool, fuel, volt, intake:intk,
+             gear: sp<1?0:g+1 };
+  }
+
+  // ---------------- poll cadence (decoupled from render) ----------------
+  let lastFast=0, lastSlow=0, gearNow=0, tripKm=0, lastTrip=T();
+  let mafMode="live";  // live | stale | na  (demo of no-data handling)
+  function poll(){
+    const tv=trueVals(), t=T();
+    gearNow=tv.gear;
+    // trip integration from live speed
+    const dtT=(t-lastTrip)/1000; lastTrip=t;
+    tripKm += (S.speed.disp/3600)*dtT;
+    if(t-lastFast>=66){ lastFast=t; FAST.forEach(k=>{ S[k].raw=tv[k]; S[k].last=t; }); }
+    if(t-lastSlow>=1000){ lastSlow=t; SLOW.forEach(k=>{
+      if(k==="maf"){
+        if(mafMode==="live"){ S.maf.supported=true; S.maf.raw=tv.maf; S.maf.last=t; }
+        else if(mafMode==="na"){ S.maf.supported=false; S.maf.raw=null; }
+        // "stale": intentionally skip updating -> feed ages out
+      } else { S[k].raw=tv[k]; S[k].last=t; }
+    }); }
+  }
+
+  // ---------------- build tiles ----------------
+  const tilesEl=$("#tiles"), tileRef={};
+  TILE_KEYS.forEach(k=>{
+    const c=CFG[k];
+    const el=document.createElement("div"); el.className="tile"; el.dataset.state="ok";
+    el.innerHTML =
+      '<div class="tile-head"><span class="tile-label">'+c.label+'</span>'+
+      '<span class="tile-pid">'+c.pid+'</span></div>'+
+      '<div class="tile-val"><span class="v">--</span><span class="u">'+c.unit+'</span>'+
+      '<span class="chip" style="margin-left:auto"></span></div>'+
+      '<div class="bar"><div class="bar-fill"></div></div>'+
+      '<div class="tile-range"><span>'+c.min+'</span><span>'+c.max+'</span></div>';
+    tilesEl.appendChild(el);
+    // threshold ticks on the bar
+    const bar=el.querySelector(".bar");
+    (c.ticks||[]).forEach(tv=>{
+      const pct=(tv-c.min)/(c.max-c.min)*100;
+      const t=document.createElement("div"); t.className="bar-tick";
+      if((c.critLow!=null&&tv===c.critLow)||(c.critHigh!=null&&tv===c.critHigh)) t.className+=" crit";
+      else if((c.warnLow!=null&&tv===c.warnLow)||(c.warnHigh!=null&&tv===c.warnHigh)) t.className+=" warn";
+      t.style.left="calc("+pct+"% - 1px)"; bar.appendChild(t);
+    });
+    tileRef[k]={ root:el, v:el.querySelector(".v"), fill:el.querySelector(".bar-fill"),
+                 chip:el.querySelector(".chip") };
+  });
+
+  // ---------------- shift lights ----------------
+  const shiftEl=$("#shift"), SL=[];
+  for(let i=0;i<12;i++){ const d=document.createElement("div"); d.className="sl"; shiftEl.appendChild(d); SL.push(d); }
+  function updateShift(){
+    const live = dispState("rpm")==="live";
+    const rpm = live ? S.rpm.disp : 0;
+    const start=3800, span=(6500-start);
+    const lit = live ? Math.round(clamp((rpm-start)/span,0,1)*12) : 0;
+    shiftEl.classList.toggle("redline", rpm>=6500);
+    for(let i=0;i<12;i++){
+      if(i<lit){ SL[i].dataset.on = i<6?"g":(i<10?"a":"r"); }
+      else SL[i].removeAttribute("data-on");
+    }
+  }
+
+  // ---------------- gauges (canvas) ----------------
+  const gauges={};
+  function initGauge(key){
+    const wrap=document.querySelector('.gauge[data-key="'+key+'"]');
+    const canvas=wrap.querySelector("canvas");
+    const g={ key, cfg:CFG[key], canvas, ctx:canvas.getContext("2d"), w:0, h:0 };
+    function size(){
+      const dpr=Math.min(window.devicePixelRatio||1, 2);
+      const r=wrap.getBoundingClientRect();
+      g.w=r.width; g.h=r.height;
+      canvas.width=Math.round(r.width*dpr); canvas.height=Math.round(r.height*dpr);
+      g.ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    size(); new ResizeObserver(size).observe(wrap);
+    gauges[key]=g;
+  }
+  const START=135*Math.PI/180, SWEEP=270*Math.PI/180;
+  function drawGauge(g){
+    const c=g.ctx, cfg=g.cfg, st=S[g.key];
+    const w=g.w, h=g.h, cx=w/2, cy=h*0.54, r=Math.min(w,h)*0.42, lw=r*0.12;
+    const ang=v=>START+(clamp(v,cfg.min,cfg.max)-cfg.min)/(cfg.max-cfg.min)*SWEEP;
+    c.clearRect(0,0,w,h);
+    // track
+    c.lineCap="round"; c.lineWidth=lw; c.strokeStyle=V["--edge-soft"];
+    c.beginPath(); c.arc(cx,cy,r,START,START+SWEEP); c.stroke();
+    // permanent warn/redline zones on the track
+    if(cfg.zones){ c.lineCap="butt"; c.lineWidth=lw;
+      cfg.zones.forEach(z=>{ c.globalAlpha=.4;
+        c.strokeStyle = z[2]==="warn"?V["--warn"]:V["--crit"];
+        c.beginPath(); c.arc(cx,cy,r,ang(z[0]),ang(z[1])); c.stroke(); c.globalAlpha=1; });
+    }
+    // value arc
+    const ds=dispState(g.key);
+    const col = ds==="live" ? SEVCOL[sev(g.key,st.raw)] : (ds==="stale"?V["--ink-dim"]:V["--ink-faint"]);
+    c.lineCap="round"; c.lineWidth=lw; c.strokeStyle=col;
+    if(!reduceMotion){ c.shadowBlur=18; c.shadowColor=col; }
+    c.beginPath(); c.arc(cx,cy,r,START,ang(st.disp)); c.stroke(); c.shadowBlur=0;
+    // ticks + labels
+    c.strokeStyle=V["--ink-dim"]; c.fillStyle=V["--ink-dim"];
+    c.font="600 "+Math.round(r*0.1)+"px "+"Roboto Condensed, Arial Narrow, sans-serif";
+    c.textAlign="center"; c.textBaseline="middle";
+    for(let v=cfg.min; v<=cfg.max+1e-6; v+=cfg.tickMinor){
+      const a=ang(v), maj=Math.abs((v-cfg.min)%cfg.tickMajor)<1e-6;
+      const r1=r*(maj?0.72:0.76), r2=r*0.66;
+      c.lineWidth=maj?2.5:1;
+      c.beginPath(); c.moveTo(cx+Math.cos(a)*r1,cy+Math.sin(a)*r1);
+      c.lineTo(cx+Math.cos(a)*r2,cy+Math.sin(a)*r2); c.stroke();
+      if(maj){ const rl=r*0.5, lx=cx+Math.cos(a)*rl, ly=cy+Math.sin(a)*rl;
+        c.fillText(String(Math.round(v/(cfg.div||1))), lx, ly); }
+    }
+    // needle
+    const na=ang(st.disp);
+    c.save(); c.translate(cx,cy); c.rotate(na);
+    c.strokeStyle=col; c.lineWidth=Math.max(2,r*0.02); c.lineCap="round";
+    c.beginPath(); c.moveTo(-r*0.13,0); c.lineTo(r*0.82,0); c.stroke(); c.restore();
+    // hub cap
+    c.beginPath(); c.fillStyle=V["--panel-2"]; c.arc(cx,cy,r*0.09,0,7); c.fill();
+    c.lineWidth=2; c.strokeStyle=V["--edge"]; c.stroke();
+  }
+  initGauge("rpm"); initGauge("speed");
+
+  // ---------------- readouts (throttled text) ----------------
+  const fmt=(v,c)=> v.toFixed(c.dec);
+  const gearEl=$("#gear"), tripEl=$("#trip"), rpmV=$("#rpm-v"), spdV=$("#speed-v"), sbVolt=$("#sb-volt");
+  function updateReadouts(){
+    // hero digits
+    const rLive=dispState("rpm")==="live", sLive=dispState("speed")==="live";
+    rpmV.textContent = Math.round(S.rpm.disp/10)*10;
+    rpmV.style.color = rLive ? SEVCOL[sev("rpm",S.rpm.raw)] : V["--ink-faint"];
+    spdV.textContent = Math.round(S.speed.disp);
+    spdV.style.color = sLive ? V["--ink"] : V["--ink-faint"];
+    gearEl.textContent = gearNow===0 ? "N" : String(gearNow);
+    tripEl.textContent = tripKm.toFixed(2);
+    // battery mirror
+    const vLive=dispState("volt")==="live";
+    sbVolt.textContent = vLive ? fmt(S.volt.disp,CFG.volt) : "--.-";
+    sbVolt.style.color = vLive ? SEVCOL[sev("volt",S.volt.raw)] : V["--ink-faint"];
+    // tiles
+    TILE_KEYS.forEach(k=>{
+      const c=CFG[k], st=S[k], ref=tileRef[k], ds=dispState(k);
+      const pct=clamp((st.disp-c.min)/(c.max-c.min)*100,0,100);
+      if(ds==="na"){
+        ref.root.dataset.state="na"; ref.v.textContent="––"; ref.fill.style.width="0%"; ref.chip.textContent="N/A";
+      } else if(ds==="stale"){
+        ref.root.dataset.state="stale"; ref.v.textContent=fmt(st.disp,c);
+        ref.fill.style.width=pct+"%"; ref.chip.textContent="STALE";
+      } else {
+        const s=sev(k,st.raw);
+        ref.root.dataset.state=s; ref.v.textContent=fmt(st.disp,c);
+        ref.fill.style.width=pct+"%"; ref.chip.textContent = (s==="warn"||s==="crit") ? s : "";
+      }
+    });
+  }
+
+  // ---------------- telltales ----------------
+  const TT=[
+    {id:"mil",  label:"CHECK ENGINE"},
+    {id:"fuel", label:"LOW FUEL"},
+    {id:"temp", label:"COOLANT TEMP"},
+    {id:"batt", label:"CHARGE"},
+    {id:"shift",label:"SHIFT UP"},
+  ];
+  const ttEl=$("#telltales"), ttRef={};
+  TT.forEach(t=>{ const el=document.createElement("div"); el.className="tt";
+    el.innerHTML='<span class="led"></span>'+t.label; ttEl.appendChild(el); ttRef[t.id]=el; });
+  function ttState(k){ return dispState(k)==="live" ? sev(k,S[k].raw) : null; }
+  function updateTelltales(){
+    const fuelS=ttState("fuel"), coolS=ttState("coolant"), voltS=ttState("volt"), rpmS=ttState("rpm");
+    set("fuel", fuelS==="crit"?"crit":fuelS==="warn"?"warn":null);
+    set("temp", coolS==="crit"?"crit":coolS==="warn"?"warn":null);
+    set("batt", voltS==="crit"?"crit":voltS==="warn"?"warn":null);
+    set("shift",(rpmS==="crit")?"crit":(dispState("rpm")==="live"&&S.rpm.raw>=6000)?"warn":null);
+    const anyCrit=[fuelS,coolS,voltS,rpmS].includes("crit");
+    set("mil", anyCrit?"warn":null);
+    function set(id,on){ if(on) ttRef[id].dataset.on=on; else ttRef[id].removeAttribute("data-on"); }
+  }
+
+  // ---------------- main loop ----------------
+  let prev=T(), lastText=0, paused=false, pausedAt=0, raf=0;
+  function frame(){
+    if(!paused) poll();
+    const t=T(), dt=Math.min(0.1,(t-prev)/1000); prev=t;
+    Object.keys(CFG).forEach(k=>{
+      const st=S[k], target = st.raw==null ? CFG[k].min : st.raw;
+      const a = 1 - Math.exp(-dt/(CFG[k].tau/1000));
+      st.disp += (target-st.disp)*a;
+    });
+    drawGauge(gauges.rpm); drawGauge(gauges.speed);
+    updateShift(); updateTelltales();
+    if(t-lastText>200){ lastText=t; updateReadouts(); }
+    raf=requestAnimationFrame(frame);
+  }
+
+  // ---------------- controls ----------------
+  const playBtn=$("#btn-play");
+  playBtn.addEventListener("click",()=>{
+    paused=!paused;
+    if(paused){ pausedAt=T(); playBtn.textContent="▶"; $("#conn").textContent="FEED PAUSED"; }
+    else{
+      const d=T()-pausedAt; T0+=d; lastFast+=d; lastSlow+=d; prev+=d; lastTrip+=d;
+      Object.keys(S).forEach(k=>S[k].last+=d);
+      playBtn.textContent="❚❚"; $("#conn").textContent="LINK OK";
+    }
+  });
+  const stBtn=$("#btn-states");
+  stBtn.addEventListener("click",()=>{
+    mafMode = mafMode==="live" ? "stale" : mafMode==="stale" ? "na" : "live";
+    stBtn.textContent="MAF: "+mafMode.toUpperCase();
+    if(mafMode==="live") S.maf.last=T();
+  });
+  $("#btn-full").addEventListener("click",()=>{
+    if(!document.fullscreenElement) document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();
+    else document.exitFullscreen&&document.exitFullscreen();
+  });
+  const overlay=$("#overlay");
+  $("#btn-help").addEventListener("click",()=>overlay.classList.add("open"));
+  $("#btn-close").addEventListener("click",()=>overlay.classList.remove("open"));
+  overlay.addEventListener("click",e=>{ if(e.target===overlay) overlay.classList.remove("open"); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") overlay.classList.remove("open"); });
+
+  // clock
+  function tick(){ const d=new Date();
+    $("#clock").textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":");
+  }
+  tick(); setInterval(tick,1000);
+
+  // spec table in help sheet
+  const specRows=[
+    ["Engine RPM","01 0C","0–7000 rpm","idle ~850","≥6000","≥6500 (redline)"],
+    ["Vehicle speed","01 0D","0–180 km/h","—","—","—"],
+    ["Coolant temp","01 05","40–120 °C","80–105 °C (cold <70)","≥110 °C","≥120 °C"],
+    ["Fuel level","01 2F","0–100 %","—","≤15 %","≤8 %"],
+    ["Throttle pos.","01 11","0–100 %","—","—","—"],
+    ["Engine load","01 04","0–100 %","—","≥90 %","—"],
+    ["Intake air temp","01 0F","-10–80 °C","—","≥60 °C","—"],
+    ["MAF rate","01 10","0–100 g/s","idle ~2–4","—","—"],
+    ["Module voltage","01 42","8–16 V","13.2–14.8 V","<12.2 / >15.0 V","<11.5 V"],
+  ];
+  $("#spec-body").innerHTML = specRows.map(r=>"<tr>"+r.map(c=>"<td>"+c+"</td>").join("")+"</tr>").join("");
+
+  raf=requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
