@@ -1,24 +1,25 @@
 # canbus — XIAO ESP32-C6 CAN sniffer for `python-can` + reverse engineering
 
 A DIY, laptop-powered CAN interface: a **Seeed XIAO ESP32-C6** + **SN65HVD230
-("VP230")** transceiver that speaks the **SLCAN / LAWICEL** protocol over native
-USB, so it drops straight into [`python-can`](https://python-can.readthedocs.io/).
-Record a car's CAN bus to a **webCAN CSV** and decode proprietary signals with the
-bundled `cansub-reverse-engineering` skill — no CANsub hardware needed.
+("VP230")** transceiver that speaks the **SLCAN / LAWICEL** protocol over **USB or
+Wi-Fi**, so it drops straight into [`python-can`](https://python-can.readthedocs.io/).
+Record a vehicle's CAN bus to a **webCAN CSV** and decode proprietary signals with the
+`cansub-reverse-engineering` skill (obtained separately — see
+[Reverse-engineering skills](#reverse-engineering-skills)). No CANsub hardware needed.
 
-Test vehicle: a Mexican **Fiat 500** exposing its 500 kbit/s drivetrain CAN on the
-OBD2 connector.
+Nothing here is vehicle-specific; it was developed and tested on a Fiat 500
+(500 kbit/s classical drivetrain CAN on the OBD2 connector).
 
 ```
- Fiat 500  ──OBD2 pin6/pin14──►  SN65HVD230  ──D2/D3──►  XIAO ESP32-C6
- (CAN-H / CAN-L)                (VP230)                   │  USB-C (SLCAN over USB-CDC)
-                                                          ▼
-                          Mac ──►  python-can (interface="slcan")  ──►  webCAN CSV
-                                                                          │
-                                          .claude/skills/cansub-reverse-engineering
-                                          survey → correlate → bitsearch → build_dbc → verify
-                                                                          ▼
-                                                                        .dbc
+ Vehicle  ──OBD2 pin6/pin14──►  SN65HVD230  ──D2/D3──►  XIAO ESP32-C6
+ (CAN-H / CAN-L)               (VP230)                  │  USB-C or Wi-Fi (SLCAN)
+                                                        ▼
+                       Host ──►  python-can (interface="slcan")  ──►  webCAN CSV
+                                                                       │
+                                       cansub-reverse-engineering skill
+                                       survey → correlate → bitsearch → build_dbc → verify
+                                                                       ▼
+                                                                     .dbc
 ```
 
 ## Repo layout
@@ -37,24 +38,34 @@ webui/               Flask web UI — admin console
   static/            style.css, app.js
 docs/hardware.md     wiring, OBD2 pinout, termination & safety notes
 requirements.txt     host Python deps (venv at repo root)
-.claude/skills/      cansub-reverse-engineering, combine-dbc, cansub-knowledge
+.claude/skills/      RE skills — NOT in this repo (see "Reverse-engineering skills")
 temp-output/         (generated) traces + working files
 decoding-output/     (generated) the DBCs you produce
 ```
 
-## 1. Build & flash the firmware
+## 1. Build & flash the firmware (PlatformIO CLI)
 
 Wire it up first — see **[docs/hardware.md](docs/hardware.md)** (⚠️ read the
 *termination* section: do **not** add a 120 Ω resistor on a car bus).
 
 ```bash
 cd firmware
-pio run                 # compile (first run downloads the pioarduino toolchain)
-pio run -t upload       # flash over USB-C
-pio device monitor      # optional: type `V` + Enter -> version string
+pio run                                              # build (1st run downloads the toolchain)
+pio run -t upload                                    # build + flash over USB (auto-detect port)
+pio run -t upload --upload-port /dev/cu.usbmodemXXXX # ...or name the port explicitly
+pio device monitor -b 115200                         # serial monitor (type `V`+Enter -> version)
+pio run -t clean                                     # clean build artifacts
 ```
 
-If upload won't start: **hold BOOT, tap RESET, release BOOT**, then re-upload.
+- **Port names:** macOS `/dev/cu.usbmodem*` · Linux `/dev/ttyACM*` · Windows `COMx`
+  (`pio device list` to find it).
+- If upload won't start (native-USB download mode can be flaky): **hold BOOT, tap
+  RESET, release BOOT**, then re-run the upload.
+- **Wi-Fi is enabled by default.** After flashing, the board hosts its own access
+  point — see [Connect over Wi-Fi](#connect-over-wi-fi). To build without it:
+  ```bash
+  PLATFORMIO_BUILD_FLAGS="-DENABLE_WIFI=0" pio run -t upload
+  ```
 
 ## 2. Set up the host Python env
 
@@ -125,17 +136,17 @@ skill decodes.
 ### Getting a decodable reference (recommended)
 
 The OFFLINE reverse-engineering workflow needs a **separately decodable reference**
-signal in the same log to anchor a proprietary one. If the Fiat answers OBD2 on the
-exposed bus, poll it while recording — the OBD2 responses (on `0x7E8…`) land in the
-same CSV and the skill decodes them with its bundled OBD2 DBC:
+signal in the same log to anchor a proprietary one. If the vehicle answers OBD2 on the
+exposed bus, poll it while recording — the OBD2 responses (11-bit `0x7E8…` or 29-bit
+`0x18DAF1xx`) land in the same CSV and the skill decodes them with its OBD2 DBC:
 
 ```bash
 .venv/bin/python tools/record.py --label drive --obd2 rpm,speed,coolant --obd2-hz 10
 ```
 
-`--obd2` switches the device to **normal** mode (it ACKs + transmits the requests).
-If no `0x7E8` responses appear, use the **VISION** workflow instead (record a phone
-video of the dashboard alongside the passive log).
+`--obd2` switches the device to **normal** mode (it ACKs + transmits the requests;
+`--obd2-addr both` tries 11-bit and 29-bit). If no OBD2 responses appear, use the
+**VISION** workflow instead (record a phone video of the dashboard alongside the log).
 
 ## 5. Reverse-engineer a signal
 
@@ -146,8 +157,52 @@ your recorded CSV and the OBD2/GPS reference. Example ask:
 > speed PID in the log as the reference."
 
 It runs `survey → correlate → bitsearch → build_dbc → verify` and writes a
-single-signal DBC under `decoding-output/fiat500/<signal>/`. Combine several with the
-**`combine-dbc`** skill into `decoding-output/fiat500/fiat500.dbc`.
+single-signal DBC under `decoding-output/<vehicle>/<signal>/`. Combine several with the
+**`combine-dbc`** skill into `decoding-output/<vehicle>/<vehicle>.dbc`.
+
+## Reverse-engineering skills
+
+That pipeline is provided by the **CSS Electronics CANsub skills**
+(`cansub-reverse-engineering`, `cansub-knowledge`, `combine-dbc`). **They are NOT
+part of this repository** — `.claude/skills/` is git-ignored. Obtain them from CSS
+Electronics and drop them under `.claude/skills/`:
+
+- CSS Electronics — <https://csselectronics.com/> · <https://github.com/CSS-Electronics>
+- python-can integration used here — <https://github.com/CSS-Electronics/python-can-cansub>
+
+The skills consume the **webCAN CSV** this tool records, so once installed the OFFLINE
+workflow runs unchanged. Everything else in this repo (firmware, host tools, web
+console) works **without** them.
+
+## Connect over Wi-Fi
+
+After flashing, the board brings up its own access point (no router needed):
+
+| | |
+|---|---|
+| SSID | `CANSNIFFER-<id>` |
+| Password | `cansniffer` |
+| Device IP | `192.168.4.1` |
+| TCP SLCAN port | `3333` |
+
+Join that Wi-Fi from your laptop, then connect either way:
+
+- **Web console** — set transport to **Wi-Fi**, host `192.168.4.1:3333`, **Connect**.
+- **python-can directly** (pyserial's `socket://` handler):
+  ```python
+  import can
+  bus = can.Bus(interface="slcan", channel="socket://192.168.4.1:3333",
+                bitrate=500000, listen_only=True)
+  ```
+- **CLI tools** — pass the socket URL as the port:
+  ```bash
+  .venv/bin/python tools/record.py --port socket://192.168.4.1:3333 --label drive
+  ```
+
+USB and Wi-Fi speak the same SLCAN; use **one host at a time**. For **full-fidelity
+recording / reverse engineering prefer USB** — on a busy bus (~1000+ fps) Wi-Fi can
+drop frames under TCP backpressure. Wi-Fi shines for an untethered live dashboard or
+diagnostics. Flash with `-DENABLE_WIFI=0` to turn the AP off.
 
 ## How the device talks to python-can (SLCAN)
 
@@ -186,7 +241,13 @@ Because it's standard SLCAN it also works with **SavvyCAN**, **cangaroo**, and
 
 ## Limitations
 
-- **Classical CAN only** (no CAN FD) — an ESP32-C6 TWAI hardware limit.
-- One CAN channel per device.
-- Wired (USB). The C6 also has Wi-Fi, so a wireless SLCAN-over-TCP variant is a
-  possible future addition.
+- **Classical CAN only** (no CAN FD) — an ESP32-C6 TWAI hardware limit; CAN FD frames
+  are reported as bus errors.
+- **One CAN channel, one host at a time** — connect over USB *or* Wi-Fi, not both.
+- **Wi-Fi can drop frames under load.** On a busy bus (~1000+ fps) the TCP link may
+  drop frames under backpressure — use **USB** for full-fidelity recording / reverse
+  engineering; Wi-Fi is best for live viewing / diagnostics.
+- **Reverse-engineering skills are not bundled** — see
+  [Reverse-engineering skills](#reverse-engineering-skills).
+- Recording throughput is bounded by the host reading continuously; the firmware RX
+  queue is 64 frames.
